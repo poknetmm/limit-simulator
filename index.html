@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko" data-brand="claude">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>한도 시뮬레이터</title>
+<!-- 외부 주소(CDN·웹폰트)를 부르지 않는다 — 회사 화이트리스트에 페이지 주소 하나만 두기 위해서다 -->
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<!-- 로그인해야 작업 화면이 열린다. auth-pending → auth-out(로그인 화면) / auth-in(작업 화면) -->
+<body class="auth-pending">
+<section id="loginScreen" class="login-screen" aria-label="로그인">
+  <form id="loginForm" class="login-card">
+    <div class="login-brand">한도 시뮬레이터</div>
+    <div class="login-sub">한도 전략 시뮬레이터</div>
+    <label class="sr-only" for="loginEmail">이메일</label>
+    <input id="loginEmail" class="login-input" type="email" autocomplete="username" placeholder="이메일" required>
+    <label class="sr-only" for="loginPassword">비밀번호</label>
+    <input id="loginPassword" class="login-input" type="password" autocomplete="current-password" placeholder="비밀번호" required>
+    <div id="loginError" class="field-error" role="alert"></div>
+    <button id="loginSubmit" class="btn btn-primary login-submit" type="submit">로그인</button>
+    <div class="login-foot">
+      <p>계정은 관리자가 발급합니다. 비밀번호를 잊으면 관리자에게 재설정을 요청하세요.</p>
+      <p>가상 데이터 전용 — 고객 개인신용정보를 입력하거나 올리지 마세요.</p>
+    </div>
+  </form>
+</section>
+
+<header class="topbar">
+  <button id="toggleMenu" class="btn-round panel-toggle" type="button" aria-controls="sidemenu" aria-expanded="false" title="메뉴 열기·닫기">☰</button>
+  <div class="brand">한도 시뮬레이터</div>
+  <!-- 전략 이름은 표시만 한다(이름은 저장할 때 정함). 누르면 전략 목록 — 메뉴를 열지 않아도 불러올 수 있게 -->
+  <button id="strategyTitle" class="strategy-title" type="button"></button>
+  <!-- 상태는 최소로: 서버 버전(흐린 글자) + 저장하지 않은 변경이 있을 때만 점 -->
+  <span id="cloudState" class="title-status"></span>
+  <span id="dirtyDot" class="dirty-dot" hidden title="저장하지 않은 변경이 있습니다">●</span>
+  <!-- 탭은 제목 바로 오른쪽 -->
+  <nav class="tabs" role="tablist" aria-label="화면">
+    <button class="tab" role="tab" data-tab="process" type="button">프로세스</button>
+    <button class="tab" role="tab" data-tab="vars" type="button">변수·표</button>
+    <button class="tab" role="tab" data-tab="bulk" type="button">대량 시뮬레이션</button>
+    <button class="tab" role="tab" data-tab="compare" type="button">전략 비교</button>
+  </nav>
+  <span class="spacer"></span>
+  <button id="toggleResults" class="btn results-toggle" type="button" aria-controls="results" aria-expanded="false" title="단일 시뮬레이션 열기·닫기">단일 시뮬레이션</button>
+</header>
+
+<!-- 왼쪽 메뉴·오른쪽 단일 시뮬레이션은 기본 닫힘. 열고 닫으면 가운데 화면 폭이 따라 바뀐다 -->
+<div id="layout" class="layout">
+  <nav id="sidemenu" class="sidemenu" aria-label="전략 파일">
+   <div class="side-inner">
+    <button id="menuList" class="menu-btn menu-primary" type="button">전략 목록</button>
+    <div class="menu-sep"></div>
+    <button id="menuNew" class="menu-btn" type="button">새로 만들기</button>
+    <button id="menuExample" class="menu-btn" type="button">예시 전략 열기</button>
+    <div class="menu-sep"></div>
+    <button id="menuSave" class="menu-btn" type="button">서버에 저장</button>
+    <button id="menuSaveAs" class="menu-btn" type="button">서버에 다른 이름으로 저장</button>
+    <div class="menu-sep"></div>
+    <button id="menuExport" class="menu-btn" type="button">로컬 PC에 저장(내보내기)</button>
+    <button id="menuImport" class="menu-btn" type="button">로컬 PC 파일 가져오기</button>
+    <input id="importFile" type="file" accept=".json,application/json" hidden>
+    <div class="menu-foot"><strong>가상 데이터 전용</strong> — 고객 개인신용정보를 입력하거나 올리지 마세요. 수치는 예시 파라미터이며 실적용 전 실데이터 교체가 필요합니다. 전략은 로그인한 팀원끼리 서버에서 열람·복사합니다(쓰기·삭제는 작성자만).</div>
+    <!-- 로그인한 사용자 — 메뉴 맨 아래(누르면 로그아웃) -->
+    <div id="userBox" class="user-box"></div>
+   </div>
+  </nav>
+
+  <main class="main">
+    <div id="confirmBar" class="confirm-bar" role="alert" hidden></div>
+    <div id="flash" class="flash" role="status" hidden></div>
+    <div id="viewBar" class="view-bar" role="status" hidden></div>
+    <section id="tab-process" class="tabpanel" role="tabpanel"></section>
+    <section id="tab-vars" class="tabpanel" role="tabpanel" hidden></section>
+    <section id="tab-bulk" class="tabpanel" role="tabpanel" hidden></section>
+    <section id="tab-compare" class="tabpanel" role="tabpanel" hidden></section>
+  </main>
+
+  <aside id="results" class="results" aria-label="단일 시뮬레이션">
+   <div class="results-inner">
+    <div id="finalCard" class="final-card"></div>
+    <div id="issues"></div>
+    <details class="panel-block" open>
+      <summary>테스트 입력값</summary>
+      <div id="testInputs" class="test-inputs"></div>
+    </details>
+    <div class="panel-block">
+      <div class="panel-title">단계별 계산결과</div>
+      <ol id="stepList" class="step-list"></ol>
+    </div>
+    <div class="results-foot">가상 데이터 전용 · 수치는 예시 파라미터(실적용 전 실데이터 교체 필요)</div>
+   </div>
+  </aside>
+</div>
+
+<script src="js/engine.js"></script>
+<script src="js/dom.js"></script>
+<script src="js/store.js"></script>
+<script src="js/describe.js"></script>
+<script src="js/vars.js"></script>
+<script src="js/guide.js"></script>
+<script src="js/panel.js"></script>
+<script src="js/canvas.js"></script>
+<!-- 엑셀 읽기·쓰기: SheetJS CE 0.20.3 (Apache-2.0, lib/LICENSE-sheetjs.txt). 외부 주소를 부르지 않도록 저장소 안에 둔다 -->
+<script src="lib/xlsx.full.min.js"></script>
+<script src="js/bulk.js"></script>
+<!-- 로그인·전략 서버 저장: supabase-js 2.117.2 (MIT, lib/LICENSE-supabase.txt) -->
+<script src="lib/supabase.js"></script>
+<script src="js/cloud.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
