@@ -2,9 +2,10 @@
    프로세스 탭 — 도형 캔버스
    ----------------------------------------------------------------------------
    · 도형(단계)은 HTML 카드, 화살표는 그 아래 SVG 한 장에 그린다
-   · 도형 아래 점(포트)을 끌어 다른 도형에 놓으면 연결. 분기 도형은 경로마다 포트가 있다
-   · 이어 둔 화살표를 끌면 끝점을 다른 도형으로 옮긴다(빈 곳에 놓으면 취소)
-   · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 입구에 붙인다
+   · 도형 가장자리 아무 곳(또는 아래 점)에서 끌어 다른 도형에 놓으면 연결. 화살표는 끌기 시작한 자리에서 나가
+     놓은 자리(가장 가까운 면의 그 위치)로 들어간다. 분기 도형은 경로마다 아래에 포트가 있고 출발은 그 포트에서만 한다
+   · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
+   · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
    · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다
    · 위치가 없는 단계(예시 전략·가져온 파일)는 자동 배치한다
    화살표는 "흐름(어느 경로를 탔는가)"이고, 계산에 쓰는 값은 설정 패널의 참조가 정한다.
@@ -17,11 +18,12 @@
   const ZOOM_KEY = 'limitsim.zoom';
   const SVGNS = 'http://www.w3.org/2000/svg';
 
-  let host, scrollEl, sizer, stage, svg, zoomLabel, addSelect, drawer;
+  let host, scrollEl, sizer, stage, svg, zoomLabel, addSelect, drawer, dot;
   let selectedNode = null, selectedEdge = null;
   let zoom = 1;
   let result = null;
   let drag = null;       // {kind:'move'|'connect', ...}
+  let connecting = false; // 화살표를 끄는 중(가장자리 위 점 표시를 멈춘다)
 
   // ── 기본 설정값(유형을 새로 고를 때) ─────────────────────────────────────
   const emptyGroup = () => ({ logic: 'and', items: [] });
@@ -112,11 +114,50 @@
     const i = Math.max(0, ps.indexOf(label === undefined ? null : label));
     return { x: n.x + (W * (i + 1)) / (ps.length + 1), y: n.y + H };
   }
-  const inPoint = (n) => ({ x: n.x + W / 2, y: n.y });
-  function curve(a, b) {
-    const dy = Math.max(28, Math.abs(b.y - a.y) / 2);
-    return `M${a.x},${a.y} C${a.x},${a.y + dy} ${b.x},${b.y - dy} ${b.x},${b.y}`;
+  // 붙는 자리 {s: 면(t 위·r 오른쪽·b 아래·l 왼쪽), t: 그 면에서의 위치 0~1(왼→오, 위→아래)}.
+  // 화살표의 fa(출발)·ta(도착)에 둔다. 없으면 예전처럼 출발 = 아래 점, 도착 = 위 가운데
+  const NORMAL = { t: [0, -1], r: [1, 0], b: [0, 1], l: [-1, 0] };
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  // 붙는 자리의 좌표와 나가는 방향(nx, ny). 도형 모양(깔때기·육각형·팔각형)의 윤곽선에 맞춘다
+  function anchorPoint(n, a) {
+    const horiz = a.s === 't' || a.s === 'b', len = horiz ? W : H;
+    const hex = n.type === 'cond' || n.type === 'branch';
+    const m = n.type === 'minmax' ? (a.s === 'b' ? SLANT + 4 : 8)
+      : hex ? (horiz ? TIP + 4 : 8)
+      : n.type === 'cutoff' ? CUT + 2 : R;
+    const pos = clamp(Math.round(a.t * len), m, len - m);
+    const inset = horiz ? 0 : n.type === 'minmax' ? (SLANT * pos) / H : hex ? TIP * Math.abs(1 - (2 * pos) / H) : 0;
+    const [nx, ny] = NORMAL[a.s];
+    if (a.s === 't') return { x: n.x + pos, y: n.y, nx, ny };
+    if (a.s === 'b') return { x: n.x + pos, y: n.y + H, nx, ny };
+    if (a.s === 'l') return { x: n.x + inset, y: n.y + pos, nx, ny };
+    return { x: n.x + W - inset, y: n.y + pos, nx, ny };
   }
+  // 포인터에서 가장 가까운 면과 그 면의 위치. 격자에 맞추고, 가운데 근처면 가운데에 붙인다
+  function anchorAt(n, p) {
+    const cx = clamp(p.x, n.x, n.x + W), cy = clamp(p.y, n.y, n.y + H);
+    const d = { t: cy - n.y, b: n.y + H - cy, l: cx - n.x, r: n.x + W - cx };
+    const s = Object.keys(d).reduce((a, k) => (d[k] < d[a] ? k : a));
+    const horiz = s === 't' || s === 'b', len = horiz ? W : H;
+    let pos = Math.round((horiz ? cx - n.x : cy - n.y) / GRID) * GRID;
+    if (Math.abs(pos - len / 2) <= 10) pos = len / 2;
+    return { s, t: Math.round((pos / len) * 1000) / 1000 };
+  }
+  function fromPoint(n, e) {
+    if (e.fa && n.type !== 'branch') return anchorPoint(n, e.fa);
+    return Object.assign(portPoint(n, e.label), { nx: 0, ny: 1 });
+  }
+  const toPoint = (n, e) => (e.ta ? anchorPoint(n, e.ta) : { x: n.x + W / 2, y: n.y, nx: 0, ny: -1 });
+  // 양 끝에서 면에 수직으로 나가고 들어오는 곡선. 끄는 중인 끝(b에 방향 없음)은 출발 방향을 마주 본다
+  function curve(a, b) {
+    const bx = b.nx === undefined ? -a.nx : b.nx, by = b.ny === undefined ? -a.ny : b.ny;
+    const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+    const da = Math.max(28, (Math.abs(a.nx) * dx + Math.abs(a.ny) * dy) / 2);
+    const db = Math.max(28, (Math.abs(bx) * dx + Math.abs(by) * dy) / 2);
+    return `M${a.x},${a.y} C${a.x + a.nx * da},${a.y + a.ny * da} ${b.x + bx * db},${b.y + by * db} ${b.x},${b.y}`;
+  }
+  function showDot(p) { dot.hidden = false; dot.style.left = `${p.x}px`; dot.style.top = `${p.y}px`; }
+  function hideDot() { dot.hidden = true; }
   function toStage(ev) {
     const r = stage.getBoundingClientRect();
     return { x: (ev.clientX - r.left) / zoom, y: (ev.clientY - r.top) / zoom };
@@ -143,12 +184,14 @@
         zoomLabel,
         h('button', { class: 'btn-round', type: 'button', title: '확대', 'aria-label': '확대', onclick: () => setZoom(zoom + 0.1) }, '+'),
         h('button', { class: 'btn btn-small', type: 'button', onclick: fitWidth }, '폭 맞춤')),
-      h('span', { class: 'toolbar-hint' }, '도형 아래 점을 끌어 다른 도형에 놓으면 연결 · 화살표를 끌면 다른 도형으로 옮겨집니다'));
+      h('span', { class: 'toolbar-hint' }, '도형 가장자리 아무 곳에서나 끌어 다른 도형의 원하는 자리에 놓으면 연결 · 화살표를 끌면 붙는 자리를 옮깁니다'));
 
     svg = document.createElementNS(SVGNS, 'svg');
     svg.classList.add('edges');
     stage = h('div', { class: 'canvas-stage' });
     stage.appendChild(svg);
+    dot = h('div', { class: 'anchor-dot', hidden: true });   // 화살표가 붙을 자리 표시
+    stage.appendChild(dot);
     sizer = h('div', { class: 'canvas-sizer' }, stage);
     scrollEl = h('div', { class: 'canvas-scroll' }, sizer);
     scrollEl.addEventListener('pointerdown', (ev) => {
@@ -271,6 +314,14 @@
       port.addEventListener('pointerdown', (ev) => startConnect(ev, n, label));
       el.appendChild(port);
     });
+    // 가장자리 띠: 어느 자리에서든 끌어 연결을 시작한다(분기는 경로 포트에서만)
+    if (n.type !== 'branch') for (const side of ['t', 'r', 'b', 'l']) {
+      const zone = h('div', { class: `edge-zone edge-zone-${side}` });
+      zone.addEventListener('pointerdown', (ev) => startConnect(ev, n, null, anchorAt(n, toStage(ev))));
+      zone.addEventListener('pointermove', (ev) => { if (!connecting) showDot(anchorPoint(n, anchorAt(n, toStage(ev)))); });
+      zone.addEventListener('pointerleave', () => { if (!connecting) hideDot(); });
+      el.appendChild(zone);
+    }
     el.addEventListener('pointerdown', (ev) => startMove(ev, n, el));
     return el;
   }
@@ -289,7 +340,7 @@
       if (temp && temp.skip === edgeKey(e)) continue;   // 옮기는 중인 화살표는 임시 화살표로 그린다
       const sa = result.steps[a.id] || {}, sb = result.steps[b.id] || {};
       const taken = sa.active && sb.active && (a.type !== 'branch' || sa.value === e.label);
-      const d = curve(portPoint(a, e.label), inPoint(b));
+      const d = curve(fromPoint(a, e), toPoint(b, e));
       const key = edgeKey(e);
       const path = document.createElementNS(SVGNS, 'path');
       path.setAttribute('d', d);
@@ -308,20 +359,25 @@
       t.setAttribute('marker-end', 'url(#arrow-on)');
       svg.appendChild(t);
     }
-    // 선택한 화살표: 삭제 버튼(곡선 가운데) + 끝점 손잡이(끌어서 다른 도형으로 옮기기)
+    // 선택한 화살표: 삭제 버튼(곡선 가운데) + 양 끝 손잡이(끝 = 다른 도형·자리로 옮기기, 시작 = 같은 도형 안에서 자리 옮기기)
     stage.querySelectorAll('.edge-del, .edge-end').forEach(x => x.remove());
     if (selectedEdge && !temp) {
       const e = s.edges.find(x => edgeKey(x) === selectedEdge);
       if (e && byId.get(e.from) && byId.get(e.to)) {
-        const a = portPoint(byId.get(e.from), e.label), b = inPoint(byId.get(e.to));
+        const a = fromPoint(byId.get(e.from), e), b = toPoint(byId.get(e.to), e);
         stage.appendChild(h('button', {
           class: 'edge-del', type: 'button', title: '연결 삭제 (Delete 키)', 'aria-label': '연결 삭제',
           style: `left:${(a.x + b.x) / 2 - 14}px;top:${(a.y + b.y) / 2 - 14}px`,
           onclick: deleteSelectedEdge,
         }, '✕'));
-        const end = h('div', { class: 'edge-end', title: '끌어서 다른 단계로 옮기기', style: `left:${b.x}px;top:${b.y - 10}px` });
+        const end = h('div', { class: 'edge-end', title: '끌어서 다른 단계·다른 자리로 옮기기', style: `left:${b.x}px;top:${b.y - 10}px` });
         end.addEventListener('pointerdown', (ev) => startEdgeDrag(ev, e, true));
         stage.appendChild(end);
+        if (byId.get(e.from).type !== 'branch') {
+          const start = h('div', { class: 'edge-end', title: '끌어서 나가는 자리 옮기기', style: `left:${a.x}px;top:${a.y - 10}px` });
+          start.addEventListener('pointerdown', (ev) => startFromDrag(ev, e));
+          stage.appendChild(start);
+        }
       }
     }
   }
@@ -333,7 +389,7 @@
   }
 
   function startMove(ev, n, el) {
-    if (ev.button !== 0 || ev.target.closest('.port')) return;
+    if (ev.button !== 0 || ev.target.closest('.port, .edge-zone')) return;
     ev.preventDefault();
     const p = toStage(ev);
     drag = { kind: 'move', id: n.id, dx: p.x - n.x, dy: p.y - n.y, moved: false, el, x: n.x, y: n.y, ox: n.x, oy: n.y };
@@ -374,11 +430,12 @@
     return best;
   }
 
-  // 화살표 끌기(새 연결·끝점 옮기기 공용): 가까운 도형을 강조하고 끝을 입구에 붙인다.
-  // 놓을 때 붙은 도형이 있으면 onDrop(도형 id), 없으면 아무것도 하지 않는다
-  function dragArrow(ev, el, fromNode, label, skip, onDrop) {
-    const from = portPoint(fromNode, label);
-    let target = null;
+  // 화살표 끌기(새 연결·끝점 옮기기 공용): 가까운 도형을 강조하고 끝을 포인터에서 가장 가까운 자리에 붙인다.
+  // 놓을 때 붙은 도형이 있으면 onDrop(도형 id, 붙는 자리), 없으면 아무것도 하지 않는다
+  function dragArrow(ev, el, fromNode, label, fa, skip, onDrop) {
+    const from = fromPoint(fromNode, { label, fa });
+    let target = null, ta = null;
+    connecting = true;
     const mark = (n) => {
       if (target === n) return;
       if (target) { const x = stage.querySelector(`.node[data-id="${target.id}"]`); if (x) x.classList.remove('drop-target'); }
@@ -389,14 +446,18 @@
       const p = toStage(e2);
       const n = nearestNode(p, fromNode.id);
       mark(n);
-      drawEdges({ from, to: n ? inPoint(n) : p, skip, snapped: !!n });
+      ta = n ? anchorAt(n, p) : null;
+      const to = n ? anchorPoint(n, ta) : p;
+      if (n) showDot(to); else hideDot();
+      drawEdges({ from, to, skip, snapped: !!n });
     };
     const end = (drop) => {
       el.onpointermove = el.onpointerup = el.onpointercancel = null;
       const t = target;
       mark(null);
+      connecting = false; hideDot();
       drawEdges();
-      if (drop && t) onDrop(t.id);
+      if (drop && t) onDrop(t.id, ta);
     };
     capture(el, ev);
     el.onpointermove = move;
@@ -405,10 +466,36 @@
     move(ev);
   }
 
-  function startConnect(ev, n, label) {
+  function startConnect(ev, n, label, fa) {
     if (ev.button !== 0) return;
     ev.preventDefault(); ev.stopPropagation();
-    dragArrow(ev, ev.currentTarget, n, label, null, (to) => connect(n.id, to, label));
+    dragArrow(ev, ev.currentTarget, n, label, fa, null, (to, ta) => connect(n.id, to, label, fa, ta));
+  }
+
+  // 선택한 화살표의 시작 손잡이: 같은 도형 안에서 나가는 자리만 옮긴다
+  function startFromDrag(ev, e) {
+    if (ev.button !== 0) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const key = edgeKey(e);
+    const a = S.strategy.nodes.find(n => n.id === e.from), b = S.strategy.nodes.find(n => n.id === e.to);
+    const to = toPoint(b, e);
+    let fa = null;
+    connecting = true;
+    capture(stage, ev);
+    const end = (save) => {
+      stage.onpointermove = stage.onpointerup = stage.onpointercancel = null;
+      connecting = false; hideDot();
+      if (save && fa) S.update(st => { st.edges.find(x => edgeKey(x) === key).fa = fa; }, 'canvas-edge');
+      else drawEdges();
+    };
+    stage.onpointermove = (e2) => {
+      fa = anchorAt(a, toStage(e2));
+      const from = anchorPoint(a, fa);
+      showDot(from);
+      drawEdges({ from, to, skip: key, snapped: true });
+    };
+    stage.onpointerup = () => end(true);
+    stage.onpointercancel = () => end(false);
   }
 
   // 이어 둔 화살표 누르기: 그대로 떼면 선택, 끌면 끝점을 다른 도형으로 옮긴다(손잡이는 바로 끌기)
@@ -417,7 +504,7 @@
     ev.preventDefault(); ev.stopPropagation();
     const key = edgeKey(e);
     const fromNode = S.strategy.nodes.find(n => n.id === e.from);
-    const begin = (e2) => dragArrow(e2, stage, fromNode, e.label, key, (to) => reconnect(key, to));
+    const begin = (e2) => dragArrow(e2, stage, fromNode, e.label, e.fa, key, (to, ta) => reconnect(key, to, ta));
     if (immediate) { begin(ev); return; }
     // 화살표 요소는 다시 그릴 때 바뀌므로 캡처는 늘 있는 stage에 건다
     const x0 = ev.clientX, y0 = ev.clientY;
@@ -430,25 +517,33 @@
     stage.onpointerup = () => { stage.onpointermove = stage.onpointerup = null; selectEdge(key); };
   }
 
-  function reconnect(key, to) {
+  function reconnect(key, to, ta) {
     const s = S.strategy;
     const old = s.edges.find(x => edgeKey(x) === key);
-    if (!old || old.to === to) return;
-    const e = Object.assign({}, old, { to });
-    if (s.edges.some(x => edgeKey(x) === edgeKey(e))) { root.App.flash('이미 같은 연결이 있습니다', 'info'); return; }
-    const edges = s.edges.map(x => (edgeKey(x) === key ? e : x));
-    if (E.order(Object.assign({}, s, { edges })).cycle.length) {
-      root.App.flash('이 연결은 순서가 고리처럼 돌아가게 만들어 옮기지 않았습니다', 'danger');
-      return;
+    if (!old) return;
+    const e = Object.assign({}, old, { to, ta });
+    if (old.to !== to) {   // 같은 도형 안에서 자리만 옮길 때는 중복·고리 검사가 필요 없다
+      if (s.edges.some(x => edgeKey(x) === edgeKey(e))) { root.App.flash('이미 같은 연결이 있습니다', 'info'); return; }
+      const edges = s.edges.map(x => (edgeKey(x) === key ? e : x));
+      if (E.order(Object.assign({}, s, { edges })).cycle.length) {
+        root.App.flash('이 연결은 순서가 고리처럼 돌아가게 만들어 옮기지 않았습니다', 'danger');
+        return;
+      }
     }
     if (selectedEdge === key) selectedEdge = edgeKey(e);
     S.update(st => { const i = st.edges.findIndex(x => edgeKey(x) === key); st.edges[i] = e; }, 'canvas-edge');
   }
 
-  function connect(from, to, label) {
+  function connect(from, to, label, fa, ta) {
     const s = S.strategy;
     const e = label === null || label === undefined ? { from, to } : { from, to, label };
-    if (s.edges.some(x => edgeKey(x) === edgeKey(e))) return;
+    if (fa) e.fa = fa;
+    if (ta) e.ta = ta;
+    // 이미 이어진 두 도형을 다시 이으면 붙는 자리만 바꾼다
+    if (s.edges.some(x => edgeKey(x) === edgeKey(e))) {
+      S.update(st => { const i = st.edges.findIndex(x => edgeKey(x) === edgeKey(e)); st.edges[i] = e; }, 'canvas-edge');
+      return;
+    }
     if (E.order(Object.assign({}, s, { edges: [...s.edges, e] })).cycle.length) {
       root.App.flash('이 연결은 순서가 고리처럼 돌아가게 만들어 연결하지 않았습니다', 'danger');
       return;

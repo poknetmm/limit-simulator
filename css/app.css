@@ -326,12 +326,7 @@ svg.edges{position:absolute;left:0;top:0;overflow:visible}
 .node.drop-target{transform:scale(1.03)}
 .node.drop-target .sh{stroke:var(--accent);stroke-width:3}
 .node.drop-target .node-shape{filter:drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 45%, transparent))}
-.node.drop-target::before{
-  content:"";position:absolute;left:50%;top:-8px;width:16px;height:16px;margin-left:-8px;border-radius:999px;
-  background:var(--accent);animation:snap-pulse .9s ease-in-out infinite;
-}
-@keyframes snap-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent)}50%{box-shadow:0 0 0 8px transparent}}
-@media (prefers-reduced-motion:reduce){.node{transition:none}.node.drop-target{transform:none}.node.drop-target::before{animation:none}}
+@media (prefers-reduced-motion:reduce){.node{transition:none}.node.drop-target{transform:none}}
 .node.selected .sh{stroke:var(--accent);stroke-width:3}
 .node.selected .node-shape{filter:drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 40%, transparent))}
 .node.inactive{opacity:.5}
@@ -350,6 +345,16 @@ svg.edges{position:absolute;left:0;top:0;overflow:visible}
   border-radius:999px;background:var(--surface);border:2px solid var(--accent);cursor:crosshair;
 }
 .port:hover{background:var(--accent)}
+
+.edge-zone{position:absolute;z-index:1;cursor:crosshair;touch-action:none}
+.edge-zone-t{left:0;right:0;top:-6px;height:12px}
+.edge-zone-b{left:0;right:0;bottom:-6px;height:12px}
+.edge-zone-l{top:0;bottom:0;left:-6px;width:12px}
+.edge-zone-r{top:0;bottom:0;right:-6px;width:12px}
+.anchor-dot{
+  position:absolute;z-index:4;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:999px;
+  background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent);pointer-events:none;
+}
 .port-label{
   width:auto;height:auto;margin:-13px 0 0 0;transform:translateX(-50%);
   padding:1px var(--sp-3);font-size:var(--text-sm);font-weight:600;color:var(--ink-2);white-space:nowrap;
