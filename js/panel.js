@@ -321,7 +321,7 @@
       tv.cols ? tv.cols.keys.map((_, j) => h('th', { class: 'num' }, E.axisKeyLabel(tv.cols, j))) : h('th', { class: 'num' }, '값'));
     const body = tv.rows.keys.map((_, i) => h('tr', {}, h('th', {}, E.axisKeyLabel(tv.rows, i)),
       (tv.cols ? tv.cols.keys : [null]).map((__, j) => cell((tv.cells[i] || [])[j]))));
-    const goEdit = btn('변수·표 탭에서 고치기', () => { root.App.showTab('vars'); root.VarsTab.select(tv.id); });
+    const goEdit = btn('변수·표 탭에서 고치기', () => root.App.showTab('vars', () => root.VarsTab.select(tv.id)));
     return h('div', { class: 'table-preview' },
       h('div', { class: 'table-scroll' }, h('table', { class: 'grid preview-grid' }, h('thead', {}, head), h('tbody', {}, body))),
       h('div', { class: 'row-actions' }, goEdit, tv.desc ? h('span', { class: 'hint' }, tv.desc) : null));
@@ -414,7 +414,7 @@
       const trace = h('div', { class: 'debt-trace' });
       const wrap = h('div', { class: 'editor' },
         field('부채표', h('div', { class: 'inline' }, tableSel,
-          t ? btn('변수·표 탭에서 고치기', () => { root.App.showTab('vars'); root.VarsTab.select(t.id); }) : null),
+          t ? btn('변수·표 탭에서 고치기', () => root.App.showTab('vars', () => root.VarsTab.select(t.id))) : null),
           '행마다 대출기간·금리는 전략값, 잔액은 고객 입력값(오른쪽 단일 시뮬레이션)입니다'),
         field('고금리 기준', refPicker(c.hiRate, (r) => commit(() => { c.hiRate = r; }), { exclude: n.id, numFormat: 'percent' }),
           '금리가 이 값 이상인 행의 잔액을 고금리채무로 합산합니다'),
@@ -685,5 +685,8 @@
     return area;
   }
 
-  root.Panel = { mount, show, undo };
+  // discard: 저장하지 않은 편집을 알림 없이 버린다(탭을 옮길 때 — 물어본 뒤라 다시 알리지 않는다)
+  function discard() { if (nodeId) resync(); }
+
+  root.Panel = { mount, show, undo, discard, get dirty() { return isDirty(); } };
 })(typeof self !== 'undefined' ? self : this);

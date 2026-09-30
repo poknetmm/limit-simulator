@@ -2,7 +2,7 @@
    프로세스 탭 — 도형 캔버스
    ----------------------------------------------------------------------------
    · 도형(단계)은 HTML 카드, 화살표는 그 아래 SVG 한 장에 그린다
-   · 도형 가장자리 아무 곳(또는 아래 점)에서 끌어 다른 도형에 놓으면 연결. 화살표는 끌기 시작한 자리에서 나가
+   · 도형 가장자리 아무 곳에서 끌어 다른 도형에 놓으면 연결. 화살표는 끌기 시작한 자리에서 나가
      놓은 자리(가장 가까운 면의 그 위치)로 들어간다. 분기 도형은 아래 경로 포트에서 끌거나, 가장자리에서 끌어
      놓은 뒤 어느 경로인지 고른다(가장자리에서 나가는 분기 화살표에는 경로 이름을 적는다)
    · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
@@ -306,12 +306,13 @@
       h('div', { class: 'node-name' }, n.name),
       h('div', { class: 'node-value' }, st.error ? h('span', { class: 'err' }, '오류') : D.stepValueText(n, st)));
     el.prepend(shapeSvg(n));
-    ports(n).forEach((label) => {
+    // 아래 점은 분기의 경로 이름표만 둔다 — 다른 도형은 가장자리에서 끌어 시작한다
+    if (n.type === 'branch') ports(n).forEach((label) => {
       const p = portPoint(n, label);
       const port = h('div', {
-        class: label === null ? 'port' : `port port-label${st.active && st.value === label ? ' taken' : ''}`,
-        style: `left:${p.x - n.x}px;top:${H}px`, title: label === null ? '끌어서 다음 단계에 연결' : `"${label}" 경로 연결`,
-      }, label === null ? null : label);
+        class: `port port-label${st.active && st.value === label ? ' taken' : ''}`,
+        style: `left:${p.x - n.x}px;top:${H}px`, title: `"${label}" 경로 연결`,
+      }, label);
       port.addEventListener('pointerdown', (ev) => startConnect(ev, n, label));
       el.appendChild(port);
     });

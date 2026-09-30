@@ -92,14 +92,31 @@
   }
 
   // ── 탭 ──────────────────────────────────────────────────────────────────
-  function showTab(name) {
-    document.querySelectorAll('.tab').forEach(b => {
-      const on = b.dataset.tab === name;
-      b.classList.toggle('active', on);
-      b.setAttribute('aria-selected', on);
-    });
-    document.querySelectorAll('.tabpanel').forEach(p => { p.hidden = p.id !== `tab-${name}`; });
-    try { localStorage.setItem(TAB_KEY, name); } catch (e) { /* 저장 못 해도 동작에는 지장 없음 */ }
+  // 다른 탭으로 옮기면 열어 둔 편집 창(단계 설정·변수 편집)을 닫아, 돌아왔을 때 아무것도 누르지 않은 화면이 나온다.
+  // 저장하지 않은 편집이 있으면 먼저 묻는다(예 = 버리고 이동, 아니오 = 남기). after는 이동이 확정된 뒤에 부른다
+  let currentTab = null;
+  function showTab(name, after) {
+    const moving = currentTab !== null && currentTab !== name;
+    const go = () => {
+      if (moving) { root.Panel.discard(); root.Canvas.select(null); root.VarsTab.close(true); }
+      currentTab = name;
+      document.querySelectorAll('.tab').forEach(b => {
+        const on = b.dataset.tab === name;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on);
+      });
+      document.querySelectorAll('.tabpanel').forEach(p => { p.hidden = p.id !== `tab-${name}`; });
+      try { localStorage.setItem(TAB_KEY, name); } catch (e) { /* 저장 못 해도 동작에는 지장 없음 */ }
+      if (after) after();
+    };
+    if (!(moving && (root.Panel.dirty || root.VarsTab.dirty))) { go(); return; }
+    let m;
+    const no = h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, '아니오');
+    m = root.UI.modal('저장하지 않은 변경', h('div', {},
+      h('div', {}, '편집 창에 저장하지 않은 변경이 있습니다. 저장하지 않고 이동할까요?'),
+      h('div', { class: 'row-actions' },
+        h('button', { class: 'btn btn-danger', type: 'button', onclick: () => { m.close(); go(); } }, '예'), no)));
+    no.focus();
   }
 
   // ── 오른쪽: 테스트 입력값 + 단계별 계산결과 ─────────────────────────────
@@ -197,7 +214,7 @@
       const st = r.steps[id] || {};
       const cls = ['step', st.active ? '' : 'inactive', st.error ? 'error' : '', id === r.finalNodeId ? 'final' : '', (st.triggered || st.chosen) ? 'mark' : ''].join(' ');
       // 누르면 프로세스 탭에서 그 도형을 고른다
-      list.appendChild(h('li', { class: cls, title: D.describe(n), onclick: () => { showTab('process'); root.Canvas.select(id); } },
+      list.appendChild(h('li', { class: cls, title: D.describe(n), onclick: () => showTab('process', () => root.Canvas.select(id)) },
         h('span', { class: 'step-n' }, n.name),
         h('span', { class: 'step-v' }, D.stepValueText(n, st)),
         st.chosen ? h('div', { class: 'step-sub' }, `선택: ${st.chosen}`) : null,

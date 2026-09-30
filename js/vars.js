@@ -1,7 +1,7 @@
 /* ============================================================================
    변수·표 탭 — 변수 목록(위) + 선택한 변수 편집기(아래)
-   목록은 수정할 때마다 다시 그리고, 편집기는 선택이 바뀌거나 다른 곳에서 값이
-   바뀌었을 때만 다시 그린다(입력 중인 칸의 커서가 튀지 않게).
+   편집은 변수 사본(draft)에 하고 [저장]을 눌러야 전략(목록·계산결과)에 반영된다. 저장하지 않고
+   다른 변수를 누르거나 창을 닫으면 버린다(단계 설정 창과 같은 방식).
    엑셀 양식 내려받기·올리기: 변수·표·부채표를 엑셀 한 파일로 한꺼번에 올린다(이름으로 맞춰 덮어쓰기).
    ========================================================================== */
 (function (root) {
@@ -11,6 +11,8 @@
   let host, listEl, editorEl, pop;
   let selectedId = null;
   let pendingDelete = null;
+  let draft = null;            // 편집 중인 변수 사본
+  let saveBtn, dirtyBadge;
 
   const SCALAR_TYPES = ['money', 'number', 'percent', 'choice', 'bool'];
   const isTableLike = (v) => v.type === 'table' || v.type === 'debt';
@@ -50,9 +52,12 @@
   }
 
   function onChange(reason) {
-    if (reason === 'saved' || reason === 'exported') return;
-    if (reason === 'vars-edit') { renderList(); return; }
-    if (reason === 'load' || reason === 'new' || reason === 'example' || reason === 'import') { selectedId = null; pendingDelete = null; }
+    if (reason === 'saved' || reason === 'exported' || reason === 'vars-save') return;
+    if (reason === 'load' || reason === 'new' || reason === 'example' || reason === 'import') { selectedId = null; pendingDelete = null; draft = null; }
+    if (selectedId && !stored()) { selectedId = null; draft = null; }
+    // 편집 중이면 사본을 지키고 목록만 다시 그린다. 편집 전이면 바뀐 전략을 다시 받는다
+    if (isDirty()) { renderList(); return; }
+    draft = stored() ? S.clone(stored()) : null;
     renderAll();
   }
 
@@ -65,7 +70,39 @@
   }
 
   function vars() { return S.strategy.variables; }
-  function selected() { return vars().find(v => v.id === selectedId) || null; }
+  const stored = () => vars().find(v => v.id === selectedId) || null;
+  const isDirty = () => !!draft && !!stored() && JSON.stringify(draft) !== JSON.stringify(stored());
+  function selected() { return draft; }   // 편집기는 사본을 그린다
+
+  // 변수를 열거나(id) 닫는다(null). 저장하지 않은 편집은 버린다 — quiet가 아니면 알린다
+  function open(id, quiet) {
+    if (isDirty() && !quiet) root.App.flash(`[${stored().name}]의 저장하지 않은 변경은 반영하지 않았습니다`, 'info');
+    selectedId = id; pendingDelete = null;
+    draft = stored() ? S.clone(stored()) : null;
+    renderAll();
+  }
+
+  function save() {
+    if (!isDirty()) return;
+    const problem = S.nameProblem(draft.name, draft.id);
+    if (problem) { root.App.flash(`저장하지 못했습니다 — ${problem}`, 'danger'); return; }
+    const d = S.clone(draft);
+    S.update(st => {
+      const i = st.variables.findIndex(v => v.id === d.id);
+      if (st.variables[i].name !== d.name) E.renameInFormulas(st, st.variables[i].name, d.name);
+      st.variables[i] = d;
+    }, 'vars-save');
+    renderList();
+    refreshState();
+    root.App.flash(`[${d.name}]을(를) 저장했습니다`, 'ok');
+  }
+
+  function refreshState() {
+    if (!saveBtn) return;
+    const dirty = isDirty();
+    saveBtn.disabled = !dirty;
+    dirtyBadge.hidden = !dirty;
+  }
 
   // ── 목록 ────────────────────────────────────────────────────────────────
   function summary(v) {
@@ -102,7 +139,7 @@
         const refs = E.findReferences(s, v.id).length;
         tbody.appendChild(h('tr', {
           class: v.id === selectedId ? 'selected' : '',
-          onclick: () => { selectedId = v.id; pendingDelete = null; renderAll(); },
+          onclick: () => { if (v.id !== selectedId) open(v.id); },
         },
           h('td', { class: 'var-name' }, v.name),
           h('td', { class: 'var-type' }, E.VAR_TYPES[v.type]),
@@ -119,7 +156,7 @@
   function addVar(kind) {
     const id = E.newId('v');
     S.update(s => s.variables.push({ id, name: S.uniqueName(kind === 'input' ? '새 입력값' : '새 파라미터'), kind, type: 'number', value: 0, desc: '' }), 'vars-add');
-    selectedId = id; renderAll();
+    open(id);
     focusName();
   }
 
@@ -129,7 +166,7 @@
       id, name: S.uniqueName('새 표'), kind: 'param', type: 'table', desc: '',
       rows: { mode: 'band', keys: [0, 10] }, cols: null, cells: [[0], [0]],
     }), 'vars-add');
-    selectedId = id; renderAll();
+    open(id);
     focusName();
   }
 
@@ -139,7 +176,7 @@
       id, name: S.uniqueName('보유부채'), kind: 'input', type: 'debt', desc: '업권 × 대출구분별 잔액. 기간·금리는 전략값',
       rows: DEBT_DEFAULT.map(([sector, kind, months, rate]) => ({ sector, kind, months, rate, balance: 0 })),
     }), 'vars-add');
-    selectedId = id; renderAll();
+    open(id);
     focusName();
   }
 
@@ -148,8 +185,8 @@
     if (el) { el.focus(); el.select(); }
   }
 
-  // 편집기에서의 수정 — 목록만 다시 그린다
-  function edit(fn) { S.update(s => fn(s.variables.find(v => v.id === selectedId)), 'vars-edit'); }
+  // 편집기에서의 수정 — 사본에만 한다([저장]해야 전략에 반영)
+  function edit(fn) { fn(draft); refreshState(); }
 
   // ── 편집기 ──────────────────────────────────────────────────────────────
   function renderEditor() {
@@ -159,10 +196,14 @@
     clear(editorEl);
     editorEl.appendChild(h('div', { class: 'editor-head' },
       h('div', { class: 'panel-title' }, v.type === 'table' ? '표 편집' : v.type === 'debt' ? '부채표 편집' : '변수 편집'),
-      h('button', { class: 'btn-round', type: 'button', title: '닫기 (Esc)', 'aria-label': '편집 창 닫기', onclick: close }, '✕')));
+      h('span', { class: 'spacer' }),
+      dirtyBadge = h('span', { class: 'badge badge-warn' }, '저장 안 됨'),
+      saveBtn = h('button', { class: 'btn btn-primary btn-small', type: 'button', title: '저장해야 전략에 반영됩니다. 저장하지 않고 닫거나 다른 변수를 누르면 버립니다', onclick: save }, '저장'),
+      h('button', { class: 'btn-round', type: 'button', title: '닫기 (Esc) — 저장하지 않은 변경은 버립니다', 'aria-label': '편집 창 닫기', onclick: () => close() }, '✕')));
     editorEl.appendChild(commonFields(v));
     editorEl.appendChild(v.type === 'table' ? tableEditor(v) : v.type === 'debt' ? debtEditor(v) : valueFields(v));
     editorEl.appendChild(deleteArea(v));
+    refreshState();
     pop.open();   // 내용을 채운 뒤 열어야 높이(--pop-h)가 맞게 잡힌다
   }
 
@@ -177,8 +218,7 @@
     nameInput.addEventListener('change', () => {
       const newName = nameInput.value.trim();
       if (S.nameProblem(newName, v.id) || newName === v.name) return;
-      const old = v.name;
-      S.update(s => { s.variables.find(x => x.id === v.id).name = newName; E.renameInFormulas(s, old, newName); }, 'vars-edit');
+      edit(x => { x.name = newName; });   // 수식 안의 이름은 저장할 때 함께 바꾼다
     });
 
     const rows = [
@@ -282,6 +322,7 @@
     wrap.appendChild(gridHost);
 
     function drawGrid() {
+      const keep = keepScroll(gridHost);
       clear(gridHost);
       const t = selected();
       const hasCols = !!t.cols;
@@ -327,6 +368,7 @@
         hasCols ? h('button', { class: 'btn btn-small', onclick: () => { edit(x => { x.cols.keys.push(nextKey(x.cols, '열')); x.cells.forEach(row => row.push(0)); }); drawGrid(); } }, '+ 열 추가') : null));
       const issues = E.validate({ variables: [t], nodes: [], edges: [] }).filter(m => m.includes(t.name));
       if (issues.length) gridHost.appendChild(h('div', { class: 'field-error' }, issues.join(' / ')));
+      keep();
     }
 
     // 엑셀에서 복사한 여러 칸(탭·줄바꿈 구분)을 붙여넣은 칸부터 채운다. 모자라면 행·열을 늘린다
@@ -362,6 +404,13 @@
       redraw();
     });
     return inp;
+  }
+
+  // 표를 다시 그리면 내용이 잠깐 비어 편집 창이 맨 위로 올라간다 — 그리기 전 위치로 돌리고,
+  // 행이 늘었으면 늘어난 만큼 내려 "행 추가" 버튼이 제자리에 있게 한다
+  function keepScroll(gridHost) {
+    const top = editorEl.scrollTop, before = gridHost.offsetHeight;
+    return () => { editorEl.scrollTop = top + Math.max(0, gridHost.offsetHeight - before); };
   }
 
   function setAxisMode(axis, m) {
@@ -402,6 +451,7 @@
       gridHost);
 
     function drawGrid() {
+      const keep = keepScroll(gridHost);
       clear(gridHost);
       const t = selected();
       const tbody = h('tbody');
@@ -428,6 +478,7 @@
         h('button', { class: 'btn btn-small', onclick: () => { edit(x => { x.rows.push({ sector: '새 업권', kind: '부동산 외', months: 36, rate: 0.1, balance: 0 }); }); drawGrid(); } }, '+ 행 추가')));
       const issues = E.validate({ variables: [t], nodes: [], edges: [] });
       if (issues.length) gridHost.appendChild(h('div', { class: 'field-error' }, issues.join(' / ')));
+      keep();
     }
 
     // 엑셀 붙여넣기: 탭·줄바꿈으로 나뉜 줄마다 업권·대출구분·기간·금리, 그 뒤 Y/N은 건너뛰고 숫자가 있으면 잔액
@@ -737,7 +788,7 @@
           ? [h('strong', {}, `[${v.name}]을(를) 쓰는 단계가 ${refs.length}곳 있습니다. `), `삭제하면 이 단계들이 오류가 됩니다: ${refs.map(n => n.name).join(', ')}`]
           : `[${v.name}]을(를) 삭제합니다.`,
         h('div', { class: 'row-actions' },
-          h('button', { class: 'btn btn-danger', onclick: () => { S.update(s => { s.variables = s.variables.filter(x => x.id !== v.id); }, 'vars-delete'); selectedId = null; pendingDelete = null; renderAll(); } }, '삭제'),
+          h('button', { class: 'btn btn-danger', onclick: () => { draft = null; S.update(s => { s.variables = s.variables.filter(x => x.id !== v.id); }, 'vars-delete'); } }, '삭제'),
           h('button', { class: 'btn', onclick: () => { pendingDelete = null; renderEditor(); } }, '취소'))));
     } else {
       area.appendChild(h('button', { class: 'btn btn-ghost-danger', onclick: () => { pendingDelete = v.id; renderEditor(); } }, v.type === 'table' ? '표 삭제' : v.type === 'debt' ? '부채표 삭제' : '변수 삭제'));
@@ -745,7 +796,7 @@
     return area;
   }
 
-  function close() { selectedId = null; pendingDelete = null; renderAll(); }
+  function close(quiet) { if (selectedId) open(null, quiet === true); }
 
   // ── 공용 ────────────────────────────────────────────────────────────────
   function field(label, control) {
@@ -760,5 +811,5 @@
     return sel;
   }
 
-  root.VarsTab = { mount, select: (id) => { selectedId = id; pendingDelete = null; renderAll(); }, importFile, templateBook };
+  root.VarsTab = { mount, select: (id) => open(id), close, importFile, templateBook, get dirty() { return isDirty(); } };
 })(typeof self !== 'undefined' ? self : this);
