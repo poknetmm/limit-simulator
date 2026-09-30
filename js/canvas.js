@@ -3,7 +3,8 @@
    ----------------------------------------------------------------------------
    · 도형(단계)은 HTML 카드, 화살표는 그 아래 SVG 한 장에 그린다
    · 도형 가장자리 아무 곳(또는 아래 점)에서 끌어 다른 도형에 놓으면 연결. 화살표는 끌기 시작한 자리에서 나가
-     놓은 자리(가장 가까운 면의 그 위치)로 들어간다. 분기 도형은 경로마다 아래에 포트가 있고 출발은 그 포트에서만 한다
+     놓은 자리(가장 가까운 면의 그 위치)로 들어간다. 분기 도형은 아래 경로 포트에서 끌거나, 가장자리에서 끌어
+     놓은 뒤 어느 경로인지 고른다(가장자리에서 나가는 분기 화살표에는 경로 이름을 적는다)
    · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
    · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
    · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다
@@ -144,7 +145,7 @@
     return { s, t: Math.round((pos / len) * 1000) / 1000 };
   }
   function fromPoint(n, e) {
-    if (e.fa && n.type !== 'branch') return anchorPoint(n, e.fa);
+    if (e.fa) return anchorPoint(n, e.fa);
     return Object.assign(portPoint(n, e.label), { nx: 0, ny: 1 });
   }
   const toPoint = (n, e) => (e.ta ? anchorPoint(n, e.ta) : { x: n.x + W / 2, y: n.y, nx: 0, ny: -1 });
@@ -235,7 +236,7 @@
     svg.setAttribute('height', maxY);
     zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
 
-    for (const el of [...stage.querySelectorAll('.node, .edge-del, .node-empty')]) el.remove();
+    for (const el of [...stage.querySelectorAll('.node, .edge-del, .node-empty, .path-menu')]) el.remove();
     if (!s.nodes.length) {
       stage.appendChild(h('div', { class: 'node-empty' }, '위 "+ 단계 추가"로 첫 단계를 만드세요. 왼쪽 메뉴의 "예시 전략 열기"로 완성된 예를 볼 수 있습니다.'));
     }
@@ -314,10 +315,10 @@
       port.addEventListener('pointerdown', (ev) => startConnect(ev, n, label));
       el.appendChild(port);
     });
-    // 가장자리 띠: 어느 자리에서든 끌어 연결을 시작한다(분기는 경로 포트에서만)
-    if (n.type !== 'branch') for (const side of ['t', 'r', 'b', 'l']) {
+    // 가장자리 띠: 어느 자리에서든 끌어 연결을 시작한다(분기는 놓은 뒤 경로를 고른다)
+    for (const side of ['t', 'r', 'b', 'l']) {
       const zone = h('div', { class: `edge-zone edge-zone-${side}` });
-      zone.addEventListener('pointerdown', (ev) => startConnect(ev, n, null, anchorAt(n, toStage(ev))));
+      zone.addEventListener('pointerdown', (ev) => startConnect(ev, n, n.type === 'branch' ? undefined : null, anchorAt(n, toStage(ev))));
       zone.addEventListener('pointermove', (ev) => { if (!connecting) showDot(anchorPoint(n, anchorAt(n, toStage(ev)))); });
       zone.addEventListener('pointerleave', () => { if (!connecting) hideDot(); });
       el.appendChild(zone);
@@ -351,6 +352,16 @@
       hit.setAttribute('class', 'edge-hit');
       hit.addEventListener('pointerdown', (ev) => startEdgeDrag(ev, e, false));
       svg.append(path, hit);
+      // 가장자리에서 나가는 분기 화살표는 어느 경로인지 시작점 옆에 적는다
+      if (a.type === 'branch' && e.fa) {
+        const from = fromPoint(a, e);
+        const t = document.createElementNS(SVGNS, 'text');
+        t.setAttribute('x', from.x + from.nx * 18);
+        t.setAttribute('y', from.y + from.ny * 18);
+        t.setAttribute('class', `edge-label${taken ? ' on' : ''}`);
+        t.textContent = e.label;
+        svg.appendChild(t);
+      }
     }
     if (temp) {
       const t = document.createElementNS(SVGNS, 'path');
@@ -373,7 +384,7 @@
         const end = h('div', { class: 'edge-end', title: '끌어서 다른 단계·다른 자리로 옮기기', style: `left:${b.x}px;top:${b.y - 10}px` });
         end.addEventListener('pointerdown', (ev) => startEdgeDrag(ev, e, true));
         stage.appendChild(end);
-        if (byId.get(e.from).type !== 'branch') {
+        {
           const start = h('div', { class: 'edge-end', title: '끌어서 나가는 자리 옮기기', style: `left:${a.x}px;top:${a.y - 10}px` });
           start.addEventListener('pointerdown', (ev) => startFromDrag(ev, e));
           stage.appendChild(start);
@@ -469,7 +480,25 @@
   function startConnect(ev, n, label, fa) {
     if (ev.button !== 0) return;
     ev.preventDefault(); ev.stopPropagation();
-    dragArrow(ev, ev.currentTarget, n, label, fa, null, (to, ta) => connect(n.id, to, label, fa, ta));
+    dragArrow(ev, ev.currentTarget, n, label, fa, null, (to, ta) => {
+      if (n.type === 'branch' && label === undefined) choosePath(n, to, fa, ta);
+      else connect(n.id, to, label, fa, ta);
+    });
+  }
+
+  // 분기 도형의 가장자리에서 끌어 온 화살표: 놓은 자리에 경로 고르기 창을 띄운다(빈 곳을 누르거나 Esc면 취소)
+  function choosePath(n, to, fa, ta) {
+    stage.querySelectorAll('.path-menu').forEach(x => x.remove());
+    const p = anchorPoint(S.strategy.nodes.find(x => x.id === to), ta);
+    const used = new Set(S.strategy.edges.filter(e => e.from === n.id).map(e => e.label));
+    const menu = h('div', { class: 'path-menu', style: `left:${p.x}px;top:${p.y}px` },
+      h('div', { class: 'path-menu-title' }, '어느 경로로 이을까요?'),
+      ports(n).map(l => h('button', {
+        class: 'btn btn-small', type: 'button',
+        onclick: () => { menu.remove(); connect(n.id, to, l, fa, ta); },
+      }, l, used.has(l) ? h('span', { class: 'muted' }, ' · 이미 이은 경로') : null)));
+    menu.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    stage.appendChild(menu);
   }
 
   // 선택한 화살표의 시작 손잡이: 같은 도형 안에서 나가는 자리만 옮긴다

@@ -351,6 +351,14 @@ svg.edges{position:absolute;left:0;top:0;overflow:visible}
 .edge-zone-b{left:0;right:0;bottom:-6px;height:12px}
 .edge-zone-l{top:0;bottom:0;left:-6px;width:12px}
 .edge-zone-r{top:0;bottom:0;right:-6px;width:12px}
+
+.edge-label{font-size:12px;font-weight:600;fill:var(--ink-2);text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:var(--surface);stroke-width:4px}
+.edge-label.on{fill:var(--accent)}
+.path-menu{
+  position:absolute;z-index:5;display:flex;flex-direction:column;gap:var(--sp-2);margin:8px 0 0 8px;
+  padding:var(--sp-4);background:var(--surface);border-radius:var(--r-xl);box-shadow:var(--shadow-2);
+}
+.path-menu-title{font-size:var(--text-sm);color:var(--muted);white-space:nowrap}
 .anchor-dot{
   position:absolute;z-index:4;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:999px;
   background:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent);pointer-events:none;
