@@ -7,7 +7,7 @@
      놓은 뒤 어느 경로인지 고른다(가장자리에서 나가는 분기 화살표에는 경로 이름을 적는다)
    · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
    · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
-   · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다
+   · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다. 고른 도형은 Delete 키로 지운다(예/아니오 확인)
    · 위치가 없는 단계(예시 전략·가져온 파일)는 자동 배치한다
    화살표는 "흐름(어느 경로를 탔는가)"이고, 계산에 쓰는 값은 설정 패널의 참조가 정한다.
    ========================================================================== */
@@ -30,17 +30,20 @@
   const emptyGroup = () => ({ logic: 'and', items: [] });
   function defaultConfig(type) {
     switch (type) {
-      // 부채 집계: 첫 부채표와 "고금리 기준" 변수(있으면)를 미리 골라 둔다
-      case 'debt': {
-        const t = S.strategy.variables.find(x => x.type === 'debt');
-        const hi = S.strategy.variables.find(x => x.name === '고금리 기준' && x.type !== 'table' && x.type !== 'debt');
-        return { table: t ? { k: 'var', id: t.id } : null, hiRate: hi ? { k: 'var', id: hi.id } : null };
+      // 기초한도: 기본형 4줄. 요소 이름과 같은 이름의 변수가 있으면 미리 넣어 둔다(예: 월소득, 월 생계비, 한계 DSR).
+      // 기존 월상환액은 같은 이름 변수가 없으면 첫 부채표의 월 원리금 합계
+      case 'pva': {
+        const vars = S.strategy.variables;
+        const pick = (k) => {
+          const label = E.PVA_SLOTS.find(x => x[0] === k)[1];
+          const v = vars.find(x => x.name === label && x.type !== 'table' && x.type !== 'debt');
+          if (v) return { k: 'var', id: v.id };
+          const d = k === 'pay' && vars.find(x => x.type === 'debt');
+          return d ? { k: 'part', id: d.id, part: 'pay' } : null;
+        };
+        const tok = (k) => { const r = pick(k); return { t: 'ref', ref: r }; };
+        return { lines: E.pvaDefaultLines(tok), rate: pick('rate'), months: pick('months') };
       }
-      // 기초한도: 요소 이름과 같은 이름의 변수가 있으면 미리 골라 둔다(예: 월소득, 월 생계비, 한계 DSR)
-      case 'pva': return Object.fromEntries(E.PVA_INPUTS.map(([k, label]) => {
-        const v = S.strategy.variables.find(x => x.name === label && x.type !== 'table');
-        return [k, v ? { k: 'var', id: v.id } : null];
-      }));
       case 'arith': return { tokens: [] };
       case 'formula': return { text: '' };
       case 'lookup': return { table: null, row: null, col: null };
@@ -48,7 +51,6 @@
       case 'minmax': return { mode: 'min', items: [] };
       case 'cond': return { when: emptyGroup(), then: null, else: null };
       case 'cutoff': return { when: emptyGroup(), action: 'reject', reason: '', input: null };
-      case 'pv': return { rate: null, months: null, payment: null };
       case 'branch': return { cases: [{ label: '경로1', when: emptyGroup() }], elseLabel: '그 외' };
     }
     return {};
@@ -246,9 +248,9 @@
 
   // ── 유형별 도형 모양 ───────────────────────────────────────────────────
   // 윤곽선은 SVG로 그린다(clip-path로 자르면 테두리가 잘리기 때문). 상태(선택·최종·오류 등)는 CSS가 윤곽선 색으로 표시한다
-  //   기초한도·현가계수 = 이중 테두리 / 사칙연산 = 둥근 사각 / 고급 수식 = 점선 / 표 조회·누진·부채 집계 = 왼쪽 표 띠
+  //   기초한도 = 이중 테두리 / 사칙연산 = 둥근 사각 / 고급 수식 = 점선 / 표 조회·누진 = 왼쪽 표 띠
   //   최소·최대 = 아래가 좁은 깔때기 / 조건·분기 = 양옆이 뾰족한 육각형 / 컷오프 = 모서리 잘린 팔각형
-  const SYMBOL = { debt: 'Σ', pva: 'PV', pv: 'PV', arith: '±', formula: 'fx', lookup: '▦', progressive: '▤', minmax: '↓', cond: '◇', branch: '◇', cutoff: '⊘' };
+  const SYMBOL = { pva: 'PV', arith: '±', formula: 'fx', lookup: '▦', progressive: '▤', minmax: '↓', cond: '◇', branch: '◇', cutoff: '⊘' };
   const SLANT = 18, TIP = 16, CUT = 14, R = 14;
 
   function roundRect(x, y, w, hh, r) {
@@ -263,12 +265,12 @@
       case 'minmax': paths.push([poly([[a, a], [a + w, a], [a + w - SLANT, a + hh], [a + SLANT, a + hh]]), 'sh']); break;
       case 'cond': case 'branch': paths.push([poly([[a + TIP, a], [a + w - TIP, a], [a + w, a + hh / 2], [a + w - TIP, a + hh], [a + TIP, a + hh], [a, a + hh / 2]]), 'sh']); break;
       case 'cutoff': paths.push([poly([[a + CUT, a], [a + w - CUT, a], [a + w, a + CUT], [a + w, a + hh - CUT], [a + w - CUT, a + hh], [a + CUT, a + hh], [a, a + hh - CUT], [a, a + CUT]]), 'sh']); break;
-      case 'lookup': case 'progressive': case 'debt':
+      case 'lookup': case 'progressive':
         paths.push([roundRect(a, a, w, hh, R), 'sh']);
         paths.push([`M${a + 26},${a} V${a + hh}`, 'sh-line']);
         for (const y of [30, 46, 62]) paths.push([`M${a + 7},${y} H${a + 20}`, 'sh-line']);
         break;
-      case 'pva': case 'pv':
+      case 'pva':
         paths.push([roundRect(a, a, w, hh, R), 'sh']);
         paths.push([roundRect(a + 4, a + 4, w - 8, hh - 8, R - 4), 'sh-inner']);
         break;
@@ -596,7 +598,35 @@
     if (host.hidden || host.closest('[hidden]')) return;
     if (ev.target.closest && ev.target.closest('input, textarea, select, [contenteditable]')) return;
     if ((ev.key === 'Delete' || ev.key === 'Backspace') && selectedEdge) { ev.preventDefault(); deleteSelectedEdge(); }
+    // 설정 패널 안(사칙연산 조각 지우기 등)이나 확인 창이 떠 있을 때의 Delete는 단계 삭제가 아니다
+    else if (ev.key === 'Delete' && selectedNode && !ev.defaultPrevented && !(ev.target.closest && ev.target.closest('.popup')) && !document.querySelector('.modal-back')) {
+      ev.preventDefault();
+      confirmDeleteNode(selectedNode);
+    }
     if (ev.key === 'Escape') select(null);
+  }
+
+  // 단계 삭제 확인 창: 예 = 단계와 연결된 화살표 삭제(되돌리기 가능), 아니오 = 닫기
+  function confirmDeleteNode(id) {
+    const n = S.strategy.nodes.find(x => x.id === id);
+    if (!n) return;
+    const refs = E.findReferences(S.strategy, id);
+    let m;
+    const yes = h('button', { class: 'btn btn-danger', type: 'button', onclick: () => {
+      m.close();
+      S.update(st => {
+        st.nodes = st.nodes.filter(x => x.id !== id);
+        st.edges = st.edges.filter(e => e.from !== id && e.to !== id);
+        if (st.finalNodeId === id) st.finalNodeId = null;
+      }, 'node-delete');
+      select(null);
+    } }, '예');
+    const no = h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, '아니오');
+    m = root.UI.modal('단계 삭제', h('div', { class: 'confirm-body' },
+      h('p', {}, `[${n.name}] 단계를 삭제하시겠습니까?`),
+      refs.length ? h('div', { class: 'warn-box' }, `이 단계의 값을 쓰는 단계가 ${refs.length}곳 있습니다: ${refs.map(x => x.name).join(', ')}. 삭제하면 이 단계들이 오류가 됩니다.`) : null,
+      h('div', { class: 'row-actions' }, yes, no)));
+    yes.focus();
   }
 
   function select(id) {
@@ -633,7 +663,7 @@
     // 겹치면 아래로 내린다
     while (s.nodes.some(n => Math.abs(n.x - x) < W && Math.abs(n.y - y) < H)) y += H + GY;
     S.update(st => {
-      st.nodes.push({ id, name: S.uniqueName(E.NODE_TYPES[type]), type, config: defaultConfig(type), format: type === 'debt' || type === 'pva' ? 'money' : 'number', x, y });
+      st.nodes.push({ id, name: S.uniqueName(E.NODE_TYPES[type]), type, config: defaultConfig(type), format: type === 'pva' ? 'money' : 'number', x, y });
       if (sel) {
         const used = new Set(st.edges.filter(e => e.from === sel.id).map(e => e.label));
         const label = sel.type === 'branch' ? (ports(sel).find(l => !used.has(l)) || ports(sel)[0]) : null;

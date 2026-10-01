@@ -78,7 +78,7 @@
 
   function migratedNote() {
     const n = S.state.migrated;
-    return n ? ` — 옛 형식 단계 ${n}개를 바꿨습니다(절사·하한·상한 → 고급 수식, 합류 → 지나온 경로의 값)` : '';
+    return n ? ` — 옛 형식 단계 ${n}개를 바꿨습니다(같은 결과가 나오게 — 부채 집계 → 부채표 합계 바로 고르기, 현가계수 → 사칙연산, 기초한도 → 줄 단위 식 등)` : '';
   }
 
   let flashTimer;

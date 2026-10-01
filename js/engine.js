@@ -28,7 +28,6 @@
   const SCHEMA = 1;
 
   const NODE_TYPES = {
-    debt:        '부채 집계',
     pva:         '기초한도(PVA)',
     arith:       '사칙연산',
     lookup:      '표 조회',
@@ -36,34 +35,49 @@
     minmax:      '최소·최대',
     cond:        '조건',
     cutoff:      '컷오프',
-    pv:          '현가계수',
     formula:     '고급 수식',
     branch:      '분기',
   };
 
   const IN_NAME = '지나온 경로의 값';
 
-  // 기초한도(PVA) — 요소(입력)와 중간값(출력)
-  //   ① 불량률 조정소득 = 월소득 × (1 − 6개월 불량률 × 연환산 배수)
-  //   ② 월가처분소득   = ① − 기존 월상환액 − 월 생계비
-  //   ③ 실질월가처분소득 = ② × 한계 DSR
-  //   ④ 기초 PVA      = ③ × [1 − (1 + 금리/12)^−기간] ÷ (금리/12)
-  const PVA_INPUTS = [
-    ['income', '월소득', 'money'], ['bad', '6개월 불량률', 'percent'], ['annual', '불량률 연환산 배수', 'number'],
-    ['pay', '기존 월상환액', 'money'], ['living', '월 생계비', 'money'], ['dsr', '한계 DSR', 'percent'],
-    ['rate', '금리(연)', 'percent'], ['months', '기간(개월)', 'number'],
+  // 기초한도(PVA) — 줄 단위 식. 줄마다 이름 + 사칙연산 조각(값·앞 줄·현가계수·연산 기호), 마지막 줄 = 기초한도.
+  // 조각의 참조에는 {k:'line', id}(이 단계의 앞 줄)와 {k:'pvf'}(현가계수)가 더 있다.
+  //   현가계수 = [1 − (1 + 금리/12)^−기간] ÷ (금리/12) — 금리·기간은 단계 설정(config.rate, config.months)
+  // 처음 줄(기본형): ① 불량률 조정소득 → ② 월가처분소득 → ③ 실질월가처분소득 → ④ 기초 PVA.
+  // 기본형 줄 id(adjinc·free·realfree)는 옛 중간값 참조와 같게 둔다
+  const PVF_NAME = '현가계수';
+  const PVA_SLOTS = [
+    ['income', '월소득'], ['bad', '6개월 불량률'], ['annual', '불량률 연환산 배수'], ['pay', '기존 월상환액'],
+    ['living', '월 생계비'], ['dsr', '한계 DSR'], ['rate', '금리(연)'], ['months', '기간(개월)'],
   ];
-  const PVA_PARTS = [['adjinc', '불량률 조정소득', 'money'], ['free', '월가처분소득', 'money'], ['realfree', '실질월가처분소득', 'money'], ['factor', '현가계수', 'number']];
+  // slot(k): 기본형 요소 k의 조각. 요소를 비워 두면(null) 빈 참조 조각이 들어간다
+  function pvaDefaultLines(slot) {
+    const R = (k) => slot(k), L = (id) => ({ t: 'ref', ref: { k: 'line', id } }), op = (v) => ({ t: 'op', v });
+    return [
+      { id: 'adjinc', name: '불량률 조정소득', tokens: [R('income'), op('*'), { t: 'lp' }, { t: 'num', v: 1 }, op('-'), R('bad'), op('*'), R('annual'), { t: 'rp' }] },
+      { id: 'free', name: '월가처분소득', tokens: [L('adjinc'), op('-'), R('pay'), op('-'), R('living')] },
+      { id: 'realfree', name: '실질월가처분소득', tokens: [L('free'), op('*'), R('dsr')] },
+      { id: 'pva', name: '기초 PVA', tokens: [L('realfree'), op('*'), { t: 'ref', ref: { k: 'pvf' } }] },
+    ];
+  }
+  const refToken = (ref) => (ref && ref.k === 'num' ? { t: 'num', v: ref.v } : { t: 'ref', ref: ref || null });
 
-  // 부채 집계 — 부채표(업권 × 대출구분, 기간·금리·잔액)의 행별 원리금균등 월상환액과 합계.
+  // 부채표 합계 — 부채표(업권 × 대출구분, 기간·금리·잔액)의 행별 원리금균등 월상환액과 합계.
+  // 다른 단계에서 "보유부채 › 고금리채무"처럼 바로 고른다. 고금리 기준은 부채표 설정(v.hiRate)
   // 대출구분이 "부동산"인 행 = 부동산 잔액, 그 밖의 행 = 신용채무. 금리 ≥ 고금리 기준인 행 = 고금리채무
   const DEBT_PARTS = [['pay', '월 원리금 합계', 'money'], ['total', '총채무', 'money'], ['mort', '부동산 잔액', 'money'], ['credit', '신용채무', 'money'], ['high', '고금리채무', 'money']];
   const DEBT_MORT = '부동산';
 
-  // 계산 유형별 중간값(다른 단계에서 "단계 이름 › 항목"으로 참조)
-  const PARTS = { pva: PVA_PARTS, debt: DEBT_PARTS };
+  // 중간값(다른 단계에서 "이름 › 항목"으로 참조): 부채표 변수의 합계, 기초한도 단계의 앞 줄들과 현가계수
   const PART_SEP = ' › ';
-  const partLabel = (type, part) => ((PARTS[type] || []).find(p => p[0] === part) || [, part])[1];
+  function partsOf(x) {
+    if (!x) return [];
+    if (x.type === 'debt' && x.rows) return DEBT_PARTS;
+    if (x.type === 'pva') return [...((x.config && x.config.lines) || []).slice(0, -1).map(l => [l.id, l.name, 'money']), ['factor', PVF_NAME, 'number']];
+    return [];
+  }
+  const partLabel = (x, part) => (partsOf(x).find(p => p[0] === part) || [, part])[1];
 
   // 원리금균등 월상환액: 잔액 × (r/12)(1+r/12)^n ÷ ((1+r/12)^n − 1). 금리 0이면 잔액 ÷ 기간
   function monthlyPayment(rate, months, balance) {
@@ -73,6 +87,26 @@
     if (r === 0) return balance / months;
     const f = Math.pow(1 + r, months);
     return balance * r * f / (f - 1);
+  }
+
+  // 부채표 합계: hi = 고금리 기준(없으면 null — 고금리채무만 계산하지 않음), balances = 행 순서 잔액(없으면 표의 테스트 잔액)
+  function debtAggregate(tv, hi, balances) {
+    const parts = { pay: 0, total: 0, mort: 0, credit: 0, high: hi === null ? undefined : 0 };
+    const rows = tv.rows.map((row, i) => {
+      const label = `${row.sector} · ${row.kind}`;
+      const b = balances && balances[i] !== undefined && balances[i] !== null && balances[i] !== '' ? balances[i] : (row.balance || 0);
+      const balance = num(b, `${label} 잔액`);
+      const rate = num(row.rate, `${label} 금리`), months = num(row.months, `${label} 기간`);
+      let pay;
+      try { pay = monthlyPayment(rate, months, balance); }
+      catch (e) { if (e instanceof CalcError) throw new CalcError(`${label}: ${e.message}`); throw e; }
+      const high = hi !== null && rate >= hi - EPS;
+      parts.pay += pay; parts.total += balance;
+      if (row.kind === DEBT_MORT) parts.mort += balance; else parts.credit += balance;
+      if (high) parts.high += balance;
+      return { sector: row.sector, kind: row.kind, rate, months, balance, pay, high };
+    });
+    return { rows, parts, hiRate: hi };
   }
 
   const VAR_TYPES = {
@@ -555,10 +589,9 @@
     const vars = new Map(strategy.variables.map(v => [v.id, v]));
     const nodes = new Map(strategy.nodes.map(n => [n.id, n]));
     const byName = new Map();
-    for (const v of strategy.variables) byName.set(v.name, { k: 'var', id: v.id });
-    for (const n of strategy.nodes) {
-      byName.set(n.name, { k: 'node', id: n.id });
-      for (const [part, label] of PARTS[n.type] || []) byName.set(`${n.name}${PART_SEP}${label}`, { k: 'part', id: n.id, part });
+    for (const x of [...strategy.variables, ...strategy.nodes]) {
+      byName.set(x.name, { k: strategy.nodes.includes(x) ? 'node' : 'var', id: x.id });
+      for (const [part, label] of partsOf(x)) byName.set(`${x.name}${PART_SEP}${label}`, { k: 'part', id: x.id, part });
     }
     return { vars, nodes, byName };
   }
@@ -566,18 +599,19 @@
   // config 안의 모든 ref를 모은다(순서 계산·참조 검사·삭제 영향 확인용)
   function collectRefs(node, idx) {
     const out = [];
+    const partOwner = (r) => ({ k: idx && idx.vars.has(r.id) ? 'var' : 'node', id: r.id });
     const walk = (x) => {
       if (!x || typeof x !== 'object') return;
       if (Array.isArray(x)) { x.forEach(walk); return; }
       if ((x.k === 'var' || x.k === 'node') && x.id) { out.push(x); return; }
-      if (x.k === 'part' && x.id) { out.push({ k: 'node', id: x.id }); return; }   // 중간값도 그 단계에 기대는 것
+      if (x.k === 'part' && x.id) { out.push(partOwner(x)); return; }   // 중간값도 그 단계(부채표 변수)에 기대는 것
       for (const key of Object.keys(x)) walk(x[key]);
     };
     walk(node.config);
     if (node.type === 'formula' && idx) {
       try {
         for (const v of formulaNames(node.config.text, node.config.lang)) {
-          if (idx.byName.has(v)) { const r = idx.byName.get(v); out.push(r.k === 'part' ? { k: 'node', id: r.id } : r); }
+          if (idx.byName.has(v)) { const r = idx.byName.get(v); out.push(r.k === 'part' ? partOwner(r) : r); }
         }
       } catch (e) { /* 문법 오류는 검증 단계에서 알린다 */ }
     }
@@ -623,6 +657,13 @@
     const { order: ord, cycle, deps } = order(strategy, idx);
     const asts = new Map();
     for (const n of strategy.nodes) {
+      if (n.type === 'pva') {
+        for (const l of (n.config && n.config.lines) || []) {
+          try { asts.set(`${n.id}#${l.id}`, parseTokens(l.tokens || [])); }
+          catch (e) { if (!(e instanceof CalcError)) throw e; asts.set(`${n.id}#${l.id}`, new CalcError(`[${l.name}] 줄: ${e.message}`)); }
+        }
+        continue;
+      }
       if (n.type !== 'arith' && n.type !== 'formula') continue;
       try {
         asts.set(n.id, n.type === 'arith' ? parseTokens(n.config.tokens || []) : parseFormula(n.config.text, n.config.lang));
@@ -652,7 +693,7 @@
 
     const varValue = (v) => {
       if (v.type === 'table') throw new CalcError(`표 [${v.name}]은(는) 값으로 쓸 수 없습니다 — 표 조회 단계를 쓰세요`);
-      if (v.type === 'debt') throw new CalcError(`부채표 [${v.name}]은(는) 값으로 쓸 수 없습니다 — 부채 집계 단계를 쓰세요`);
+      if (v.type === 'debt') throw new CalcError(`부채표 [${v.name}]은(는) 값으로 쓸 수 없습니다 — [${v.name}${PART_SEP}고금리채무]처럼 합계를 고르세요`);
       const raw = Object.prototype.hasOwnProperty.call(inputs, v.id) && v.kind === 'input' ? inputs[v.id] : v.value;
       if (v.type === 'bool') return raw === true || raw === 1 || raw === '1' || raw === 'Y' || raw === '예' || raw === 'true' ? 1 : 0;
       if (v.type === 'choice') return raw === null || raw === undefined ? '' : String(raw);
@@ -673,6 +714,15 @@
         if (!v) throw new CalcError('삭제된 변수를 참조하고 있습니다');
         return varValue(v);
       }
+      if (ref.k === 'part' && idx.vars.has(ref.id)) {
+        const v = idx.vars.get(ref.id);
+        const d = debtOf(v);
+        if (d.parts[ref.part] === undefined) {
+          if (ref.part === 'high') throw new CalcError(`부채표 [${v.name}]의 고금리 기준을 정하세요(변수·표 탭)`);
+          throw new CalcError(`[${v.name}${PART_SEP}${partLabel(v, ref.part)}] 값이 없습니다`);
+        }
+        return d.parts[ref.part];
+      }
       if (ref.k === 'node' || ref.k === 'part') {
         const n = idx.nodes.get(ref.id);
         if (!n) throw new CalcError('삭제된 단계를 참조하고 있습니다');
@@ -680,10 +730,20 @@
         if (!s || !s.active) throw new CalcError(`[${n.name}] 단계는 이번 계산 경로에 없습니다`);
         if (s.error) throw new CalcError(`[${n.name}] 단계에 오류가 있습니다`);
         if (ref.k === 'node') return s.value;
-        if (!s.parts || !(ref.part in s.parts)) throw new CalcError(`[${n.name}${PART_SEP}${partLabel(n.type, ref.part)}] 값이 없습니다`);
+        if (!s.parts || !(ref.part in s.parts)) throw new CalcError(`[${n.name}${PART_SEP}${partLabel(n, ref.part)}] 값이 없습니다`);
         return s.parts[ref.part];
       }
       throw new CalcError('알 수 없는 참조입니다');
+    };
+
+    // 부채표 합계는 이번 계산에서 한 번만 구한다. 잔액은 고객 입력값 — 대량 시뮬레이션은 inputs[부채표 id]에 행 순서대로 잔액 배열을 넘긴다
+    const debts = result.debts = {};
+    const debtOf = (v) => {
+      if (debts[v.id]) return debts[v.id];
+      if (v.hiRate && v.hiRate.k !== 'var' && v.hiRate.k !== 'num') throw new CalcError(`부채표 [${v.name}]의 고금리 기준은 변수나 숫자로 정합니다`);
+      const hi = v.hiRate ? num(resolve(v.hiRate), `[${v.name}] 고금리 기준`) : null;
+      const given = Object.prototype.hasOwnProperty.call(inputs, v.id) && Array.isArray(inputs[v.id]) ? inputs[v.id] : null;
+      return (debts[v.id] = debtAggregate(v, hi, given));
     };
 
     // 지금 계산 중인 단계로 "지나온" 화살표의 앞 단계 값. 활성 판정과 같은 기준으로 고른다
@@ -708,7 +768,7 @@
     const refName = (ref) => {
       if (!ref) return '';
       if (ref.k === 'in') return IN_NAME;
-      if (ref.k === 'part') { const n = idx.nodes.get(ref.id) || {}; return `${n.name || '(삭제됨)'}${PART_SEP}${partLabel(n.type, ref.part)}`; }
+      if (ref.k === 'part') { const x = idx.nodes.get(ref.id) || idx.vars.get(ref.id) || {}; return `${x.name || '(삭제됨)'}${PART_SEP}${partLabel(x, ref.part)}`; }
       if (ref.k === 'var') return (idx.vars.get(ref.id) || {}).name || '(삭제됨)';
       if (ref.k === 'node') return (idx.nodes.get(ref.id) || {}).name || '(삭제됨)';
       return fmtNum(ref.v);
@@ -751,48 +811,44 @@
     function evalNode(node, step) {
       const c = node.config || {};
       switch (node.type) {
-        case 'debt': {
-          const tv = idx.vars.get(c.table && c.table.id);
-          if (!tv || tv.type !== 'debt') throw new CalcError('집계할 부채표를 고르세요');
-          if (!c.hiRate) throw new CalcError('고금리 기준을 고르세요');
-          const hi = num(resolve(c.hiRate), '고금리 기준');
-          // 잔액은 고객 입력값 — 대량 시뮬레이션은 inputs[부채표 id]에 행 순서대로 잔액 배열을 넘긴다
-          const given = Object.prototype.hasOwnProperty.call(inputs, tv.id) && Array.isArray(inputs[tv.id]) ? inputs[tv.id] : null;
-          const parts = { pay: 0, total: 0, mort: 0, credit: 0, high: 0 };
-          step.rows = tv.rows.map((row, i) => {
-            const label = `${row.sector} · ${row.kind}`;
-            const balance = num(given && given[i] !== undefined && given[i] !== null && given[i] !== '' ? given[i] : (row.balance || 0), `${label} 잔액`);
-            const rate = num(row.rate, `${label} 금리`), months = num(row.months, `${label} 기간`);
-            let pay;
-            try { pay = monthlyPayment(rate, months, balance); }
-            catch (e) { if (e instanceof CalcError) throw new CalcError(`${label}: ${e.message}`); throw e; }
-            const high = rate >= hi - EPS;
-            const mort = row.kind === DEBT_MORT;
-            parts.pay += pay; parts.total += balance;
-            if (mort) parts.mort += balance; else parts.credit += balance;
-            if (high) parts.high += balance;
-            return { sector: row.sector, kind: row.kind, rate, months, balance, pay, high };
-          });
-          step.hiRate = hi;
-          step.parts = parts;
-          step.value = parts.pay;
-          break;
-        }
         case 'pva': {
-          const g = {};
-          for (const [k, label] of PVA_INPUTS) {
-            if (!c[k]) throw new CalcError(`${label}을(를) 고르세요`);
-            g[k] = num(resolve(c[k]), label);
+          const lines = c.lines || [];
+          if (!lines.length) throw new CalcError('줄이 없습니다 — [+ 줄 추가]로 식을 만드세요');
+          // 현가계수: 금리·기간을 둘 다 고르면 계산한다. 줄에서 쓰는데 비어 있으면 오류
+          let factor;
+          if (c.rate && c.months) {
+            const r = num(resolve(c.rate), '현가계수 금리') / 12, m = num(resolve(c.months), '현가계수 기간');
+            factor = r === 0 ? m : (1 - Math.pow(1 + r, -m)) / r;
           }
-          const adjinc = g.income * (1 - g.bad * g.annual);
-          const free = adjinc - g.pay - g.living;
-          const realfree = free * g.dsr;
-          const r = g.rate / 12;
-          const factor = r === 0 ? g.months : (1 - Math.pow(1 + r, -g.months)) / r;
-          step.inputs = g;
-          step.parts = { adjinc, free, realfree, factor };
-          step.factor = factor;
-          step.value = realfree * factor;
+          const vals = {};
+          const local = (ref) => {
+            if (ref && ref.k === 'pvf') {
+              if (factor === undefined) throw new CalcError(`${PVF_NAME}의 금리·기간을 고르세요`);
+              return factor;
+            }
+            if (ref && ref.k === 'line') {
+              const l = lines.find(x => x.id === ref.id);
+              if (!l) throw new CalcError('삭제된 줄을 참조하고 있습니다');
+              if (!(ref.id in vals)) throw new CalcError(`[${l.name}] 줄은 아래에 있어 쓸 수 없습니다(위 줄만 씁니다)`);
+              return vals[ref.id];
+            }
+            return resolve(ref);
+          };
+          step.lines = [];
+          for (const l of lines) {
+            let v;
+            try { v = num(evalAst(astOf(`${node.id}#${l.id}`), local), `[${l.name}] 계산 결과`); }
+            catch (e) {
+              if (!(e instanceof CalcError) || e.message.startsWith(`[${l.name}] 줄`)) throw e;
+              throw new CalcError(`[${l.name}] 줄: ${e.message}`);
+            }
+            vals[l.id] = v;
+            // 계산 과정 표시용: 조각마다 값(연산 기호·괄호는 null)
+            step.lines.push({ id: l.id, name: l.name, value: v, vals: (l.tokens || []).map(t => (t.t === 'ref' ? local(t.ref) : t.t === 'num' ? t.v : null)) });
+          }
+          step.parts = Object.assign({}, vals, factor === undefined ? {} : { factor });
+          if (factor !== undefined) step.factor = factor;
+          step.value = vals[lines[lines.length - 1].id];
           break;
         }
         case 'arith': step.value = num(evalAst(astOf(node.id), resolve), '계산 결과'); break;
@@ -827,14 +883,6 @@
           if (hit && c.action === 'reject') { step.reject = true; step.reason = c.reason || node.name; step.value = 0; }
           else if (hit) { step.value = 0; step.reason = c.reason || node.name; }
           else step.value = c.input ? resolve(c.input) : null;
-          break;
-        }
-        case 'pv': {
-          const rate = num(resolve(c.rate), '금리') / 12;
-          const n = num(resolve(c.months), '기간');
-          const factor = rate === 0 ? n : (1 - Math.pow(1 + rate, -n)) / rate;
-          step.factor = factor;
-          step.value = c.payment ? factor * num(resolve(c.payment), refName(c.payment)) : factor;
           break;
         }
         case 'branch': {
@@ -910,6 +958,16 @@
         if (r.k === 'var' && !idx.vars.has(r.id)) issues.push(`[${n.name}]이(가) 삭제된 변수를 참조합니다`);
         if (r.k === 'node' && !idx.nodes.has(r.id)) issues.push(`[${n.name}]이(가) 삭제된 단계를 참조합니다`);
       }
+      if (n.type === 'pva') {
+        const ln = new Set();
+        for (const l of n.config.lines || []) {
+          if (!l.name || !l.name.trim()) issues.push(`[${n.name}]에 이름이 빈 줄이 있습니다`);
+          else if (ln.has(l.name)) issues.push(`[${n.name}]의 줄 이름이 겹칩니다: ${l.name}`);
+          else if (/[\[\]›]/.test(l.name)) issues.push(`[${n.name}]의 줄 이름에 [ ] › 를 쓸 수 없습니다: ${l.name}`);
+          ln.add(l.name);
+          try { parseTokens(l.tokens || []); } catch (e) { issues.push(`[${n.name}] [${l.name}] 줄: ${e.message}`); }
+        }
+      }
       if (n.type === 'formula') {
         try {
           for (const v of formulaNames(n.config.text, n.config.lang)) if (v !== IN_NAME && !idx.byName.has(v)) issues.push(`[${n.name}] 수식의 [${v}]를 찾을 수 없습니다`);
@@ -923,8 +981,10 @@
   }
 
   // ── 옛 형식 변환 ─────────────────────────────────────────────────────────
-  // 예전 "절사·하한·상한"과 "합류" 유형은 없앴다. 그 전에 저장한 전략(브라우저 임시저장·
-  // 내보낸 .json)을 열면 같은 결과가 나오도록 바꾼다. 바꾼 단계 수를 돌려준다
+  // 없앤 유형으로 저장한 전략(브라우저 임시저장·내보낸 .json·서버 저장본)을 열면 같은 결과가 나오도록 바꾼다.
+  // 바꾼 단계 수를 돌려준다
+  //   절사·하한·상한 → 고급 수식 / 합류 → 지나온 경로의 값 (2026-09-29)
+  //   부채 집계 → 단계를 없애고 부채표 합계를 바로 참조 / 현가계수 → 사칙연산 / 기초한도 요소 8개 → 줄 단위 식 (2026-10-01)
   function migrate(strategy) {
     let changed = 0;
     const idx = index(strategy);
@@ -938,7 +998,35 @@
       if (ref.k === 'in') return `[${IN_NAME}]`;
       return String(ref.v);
     };
-    for (const n of strategy.nodes) {
+    // 모든 단계 설정 안의 참조를 fn(ref)로 바꾼다(fn이 undefined를 돌려주면 그대로)
+    const mapRefs = (fn) => {
+      const walk = (x) => {
+        if (!x || typeof x !== 'object') return x;
+        if (Array.isArray(x)) { for (let i = 0; i < x.length; i++) x[i] = walk(x[i]); return x; }
+        if (typeof x.k === 'string' && (x.id || x.k === 'part')) { const y = fn(x); if (y !== undefined) return y; }
+        for (const key of Object.keys(x)) x[key] = walk(x[key]);
+        return x;
+      };
+      for (const n of strategy.nodes) n.config = walk(n.config);
+    };
+    const removeNode = (n) => {
+      // 들어오는 화살표의 앞 단계를 나가는 화살표의 뒤 단계로 바로 잇는다(분기 경로 이름은 유지)
+      const ins = strategy.edges.filter(e => e.to === n.id && e.from !== n.id), outs = strategy.edges.filter(e => e.from === n.id && e.to !== n.id);
+      strategy.edges = strategy.edges.filter(e => e.from !== n.id && e.to !== n.id);
+      const has = (f, t, l) => strategy.edges.some(e => e.from === f && e.to === t && (e.label || null) === (l || null));
+      for (const i of ins) for (const o of outs) {
+        if (has(i.from, o.to, i.label)) continue;
+        const e = { from: i.from, to: o.to };
+        if (i.label !== undefined) e.label = i.label;
+        if (i.fa) e.fa = i.fa;
+        if (o.ta) e.ta = o.ta;
+        strategy.edges.push(e);
+      }
+      strategy.nodes = strategy.nodes.filter(x => x !== n);
+      if (strategy.finalNodeId === n.id) strategy.finalNodeId = null;
+    };
+
+    for (const n of [...strategy.nodes]) {
       const c = n.config || {};
       if (n.type === 'clamp') {
         // 하한·상한 → 단위 순서(옛 계산과 같음)
@@ -957,7 +1045,41 @@
         n.type = 'arith';
         n.config = { tokens: [{ t: 'ref', ref: { k: 'in' } }] };
         changed++;
+      } else if (n.type === 'pv') {
+        // 현가계수 → 사칙연산: [월 상환액] × (1 − (1 + 금리 ÷ 12) ^ (0 − 기간)) ÷ (금리 ÷ 12)
+        const op = (v) => ({ t: 'op', v }), lp = { t: 'lp' }, rp = { t: 'rp' }, R = refToken;
+        const mr = [lp, R(c.rate), op('/'), { t: 'num', v: 12 }, rp];
+        n.type = 'arith';
+        n.config = { tokens: [
+          ...(c.payment ? [R(c.payment), op('*')] : []),
+          lp, { t: 'num', v: 1 }, op('-'), lp, { t: 'num', v: 1 }, op('+'), ...mr, rp, op('^'), lp, { t: 'num', v: 0 }, op('-'), R(c.months), rp, rp,
+          op('/'), ...mr,
+        ] };
+        changed++;
+      } else if (n.type === 'pva' && !Array.isArray(c.lines)) {
+        // 요소 8개 → 기본형 줄(줄 id가 옛 중간값과 같아 참조가 그대로 이어진다)
+        n.config = { lines: pvaDefaultLines((k) => refToken(c[k])), rate: c.rate || null, months: c.months || null };
+        changed++;
       }
+    }
+
+    // 부채 집계: 그 단계의 중간값·값 참조를 부채표 합계로 옮기고, 고금리 기준은 부채표 설정으로 옮긴 뒤 단계를 없앤다
+    for (const n of strategy.nodes.filter(x => x.type === 'debt')) {
+      const c = n.config || {};
+      const tv = c.table && strategy.variables.find(v => v.id === c.table.id && v.type === 'debt');
+      if (tv) {
+        if (!tv.hiRate && c.hiRate && (c.hiRate.k === 'var' || c.hiRate.k === 'num')) tv.hiRate = c.hiRate;
+        mapRefs((r) => (r.id === n.id && (r.k === 'part' || r.k === 'node') ? { k: 'part', id: tv.id, part: r.k === 'node' ? 'pay' : r.part } : undefined));
+        const label = (part) => (DEBT_PARTS.find(p => p[0] === part) || [])[1];
+        for (const m of strategy.nodes) {
+          if (m.type !== 'formula' || !m.config.text) continue;
+          let t = m.config.text;
+          for (const [part] of DEBT_PARTS) t = t.split(`[${n.name}${PART_SEP}${label(part)}]`).join(`[${tv.name}${PART_SEP}${label(part)}]`);
+          m.config.text = t.split(`[${n.name}]`).join(`[${tv.name}${PART_SEP}${label('pay')}]`);
+        }
+      }
+      removeNode(n);
+      changed++;
     }
     return changed;
   }
@@ -1036,7 +1158,7 @@
     for (const n of strategy.nodes) {
       if (n.type !== 'formula' || !n.config.text) continue;
       n.config.text = n.config.text.split(`[${oldName}]`).join(`[${newName}]`)
-        .split(`[${oldName}${PART_SEP}`).join(`[${newName}${PART_SEP}`);   // 기초한도·부채 집계 중간값 이름
+        .split(`[${oldName}${PART_SEP}`).join(`[${newName}${PART_SEP}`);   // 기초한도 줄·부채표 합계 이름
     }
   }
 
@@ -1068,8 +1190,8 @@
   }
 
   return {
-    SCHEMA, NODE_TYPES, VAR_TYPES, CMP_OPS, IN_NAME, PVA_INPUTS, PVA_PARTS, DEBT_PARTS, DEBT_MORT, PARTS, PART_SEP, CalcError,
-    monthlyPayment, inputColumns, autoMap, parseInputCell, rowInputs,
+    SCHEMA, NODE_TYPES, VAR_TYPES, CMP_OPS, IN_NAME, PVF_NAME, PVA_SLOTS, DEBT_PARTS, DEBT_MORT, PART_SEP, CalcError,
+    pvaDefaultLines, partsOf, monthlyPayment, debtAggregate, inputColumns, autoMap, parseInputCell, rowInputs,
     prepare, evaluate, validate, order, index, findReferences, renameInFormulas, finalNodeId, migrate,
     tokenize, parseTokens, evalAst, LANGS, parseFormula, formulaNames, lookupTable, progressiveSum, axisKeyLabel,
     toNum, fmtNum, fmtValue, newId, emptyStrategy,

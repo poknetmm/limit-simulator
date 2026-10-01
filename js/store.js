@@ -24,7 +24,7 @@
   // exportedAt = "여기까지는 보관된 상태"인 시각. 방금 연 전략은 열린 시점 그대로가 보관본이다
   function load(strategy, reason, exportedAt, cloud) {
     state.cloud = cloud || null;            // 파일·예시·새로 만들기는 서버와 연결되지 않은 상태로 연다
-    state.migrated = E.migrate(strategy);   // 옛 형식(절사·하한·상한, 합류) 단계 변환 수 — 화면이 알린다
+    state.migrated = E.migrate(strategy);   // 옛 형식(절사·하한·상한, 합류, 부채 집계, 현가계수, 요소형 기초한도) 단계 변환 수 — 화면이 알린다
     state.view = null;                      // 다른 전략을 열면 이 건 보기는 끝낸다(변수가 달라진다)
     state.strategy = strategy;
     state.exportedAt = exportedAt ? new Date(exportedAt) : new Date(strategy.meta.updated);

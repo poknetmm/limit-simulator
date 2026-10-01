@@ -5,14 +5,20 @@
 
   const OP_TEXT = { '>=': '≥', '>': '>', '<=': '≤', '<': '<', '=': '=', '<>': '≠', '*': '×', '/': '÷', '+': '+', '-': '−', '^': '^' };
 
-  function refText(ref) {
+  // node: 기초한도 단계의 줄 조각을 읽을 때 — 앞 줄({k:'line'})과 현가계수({k:'pvf'})를 그 단계 안에서 찾는다
+  function refText(ref, node) {
     if (!ref) return '(비어 있음)';
     const s = S.strategy;
     if (ref.k === 'in') return `[${E.IN_NAME}]`;
+    if (ref.k === 'pvf') return `[${E.PVF_NAME}]`;
+    if (ref.k === 'line') {
+      const l = node && ((node.config && node.config.lines) || []).find(x => x.id === ref.id);
+      return l ? `[${l.name}]` : '[삭제된 줄]';
+    }
     if (ref.k === 'part') {
-      const n = S.strategy.nodes.find(x => x.id === ref.id);
-      const label = ((n && E.PARTS[n.type]) || []).find(p => p[0] === ref.part)?.[1] || ref.part;
-      return n ? `[${n.name}${E.PART_SEP}${label}]` : '[삭제됨]';
+      const x = s.nodes.find(n => n.id === ref.id) || s.variables.find(v => v.id === ref.id);
+      const label = E.partsOf(x).find(p => p[0] === ref.part)?.[1] || ref.part;
+      return x ? `[${x.name}${E.PART_SEP}${label}]` : '[삭제됨]';
     }
     if (ref.k === 'var') { const v = s.variables.find(x => x.id === ref.id); return v ? `[${v.name}]` : '[삭제됨]'; }
     if (ref.k === 'node') { const n = s.nodes.find(x => x.id === ref.id); return n ? `[${n.name}]` : '[삭제됨]'; }
@@ -27,15 +33,18 @@
     return parts.join(g.logic === 'or' ? ' 또는 ' : ' 그리고 ');
   }
 
-  function tokensText(tokens) {
-    return (tokens || []).map(t => t.t === 'ref' ? refText(t.ref) : t.t === 'num' ? E.fmtNum(t.v) : t.t === 'lp' ? '(' : t.t === 'rp' ? ')' : (OP_TEXT[t.v] || t.v)).join(' ');
+  function tokenText(t, node) {
+    return t.t === 'ref' ? refText(t.ref, node) : t.t === 'num' ? E.fmtNum(t.v) : t.t === 'lp' ? '(' : t.t === 'rp' ? ')' : (OP_TEXT[t.v] || t.v);
+  }
+  function tokensText(tokens, node) {
+    return (tokens || []).map(t => tokenText(t, node)).join(' ');
   }
 
   function describe(n) {
     const c = n.config || {};
     switch (n.type) {
-      case 'debt': return `부채표 ${refText(c.table)}의 행별 원리금 합계, 고금리 기준 ${refText(c.hiRate)}`;
-      case 'pva': return `실질월가처분소득 × 현가계수 — 월소득 ${refText(c.income)}, 불량률 ${refText(c.bad)}, 금리 ${refText(c.rate)}, 기간 ${refText(c.months)}`;
+      case 'pva': return [...(c.lines || []).map(l => `${l.name} = ${tokensText(l.tokens, n) || '(식 없음)'}`),
+        `${E.PVF_NAME}: 연 ${refText(c.rate)}, ${refText(c.months)}개월`].join(' / ');
       case 'arith': return tokensText(c.tokens) || '(식 없음)';
       case 'formula': return c.text || '(수식 없음)';
       case 'lookup': return `표 ${refText(c.table)}에서 행 = ${refText(c.row)}${c.col ? `, 열 = ${refText(c.col)}` : ''}`;
@@ -43,7 +52,6 @@
       case 'minmax': return `${c.mode === 'max' ? '최댓값' : '최솟값'}: ${(c.items || []).map(refText).join(', ') || '(항목 없음)'}`;
       case 'cond': return `만약 ${groupText(c.when)} 이면 ${refText(c.then)}, 아니면 ${refText(c.else)}`;
       case 'cutoff': return `${groupText(c.when)} 이면 ${c.action === 'reject' ? '대출 거절' : '0원'}${c.input ? `, 아니면 ${refText(c.input)}` : ''}`;
-      case 'pv': return `현가계수(연 ${refText(c.rate)}, ${refText(c.months)}개월)${c.payment ? ` × ${refText(c.payment)}` : ''}`;
       case 'branch': return [...(c.cases || []).map(k => `${k.label}: ${groupText(k.when)}`), `그 외: ${c.elseLabel || '그 외'}`].join(' / ');
     }
     return '';
@@ -59,5 +67,5 @@
     return E.fmtValue(st.value, n.format);
   }
 
-  root.Describe = { OP_TEXT, refText, groupText, tokensText, describe, stepValueText };
+  root.Describe = { OP_TEXT, refText, groupText, tokenText, tokensText, describe, stepValueText };
 })(typeof self !== 'undefined' ? self : this);

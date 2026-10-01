@@ -172,10 +172,12 @@
 
   function addDebt() {
     const id = E.newId('d');
-    S.update(s => s.variables.push({
+    // 고금리 기준: "고금리 기준" 변수가 있으면 미리 골라 둔다(없으면 편집기에서 고른다)
+    const hi = S.strategy.variables.find(x => x.name === '고금리 기준' && !isTableLike(x));
+    S.update(s => s.variables.push(Object.assign({
       id, name: S.uniqueName('보유부채'), kind: 'input', type: 'debt', desc: '업권 × 대출구분별 잔액. 기간·금리는 전략값',
       rows: DEBT_DEFAULT.map(([sector, kind, months, rate]) => ({ sector, kind, months, rate, balance: 0 })),
-    }), 'vars-add');
+    }, hi ? { hiRate: { k: 'var', id: hi.id } } : {})), 'vars-add');
     open(id);
     focusName();
   }
@@ -443,41 +445,82 @@
 
   // ── 부채표 편집기 ───────────────────────────────────────────────────────
   // 행 = 업권 × 대출구분. 대출기간·금리는 전략값, 잔액은 고객 입력값의 테스트 기본값(오른쪽 단일 시뮬레이션에서도 바꾼다)
+  // 고금리 기준과 합계 5가지(월 원리금 합계·총채무·부동산 잔액·신용채무·고금리채무)도 여기서 본다.
+  // 계산 단계에서는 값 고르기의 "보유부채 › 고금리채무"처럼 합계를 바로 쓴다
   function debtEditor(v) {
     const wrap = h('div', { class: 'table-editor' });
-    const gridHost = h('div');
+    const hiHost = h('div', { class: 'inline' }), gridHost = h('div'), sumHost = h('div', { class: 'debt-sum' });
+    let payCells = [];
     wrap.append(
-      h('div', { class: 'hint' }, '엑셀에서 "업권 · 대출구분 · 기간 · 금리 (· 고금리여부) (· 잔액)" 칸을 복사해 업권 칸에 붙여넣으면 그 줄부터 채웁니다. 고금리 여부는 부채 집계 단계의 고금리 기준으로 자동 판정하므로 따로 적지 않습니다.'),
-      gridHost);
+      h('div', { class: 'field' }, h('span', { class: 'field-label' }, '고금리 기준'), h('div', { class: 'field-control' }, hiHost,
+        h('div', { class: 'hint' }, '금리가 이 값 이상인 행의 잔액을 고금리채무로 합산합니다'))),
+      h('div', { class: 'hint' }, '엑셀에서 "업권 · 대출구분 · 기간 · 금리 (· 고금리여부) (· 잔액)" 칸을 복사해 업권 칸에 붙여넣으면 그 줄부터 채웁니다. 고금리 여부는 위 고금리 기준으로 자동 판정하므로 따로 적지 않습니다.'),
+      gridHost,
+      h('div', { class: 'field' }, h('span', { class: 'field-label' }, '합계'), h('div', { class: 'field-control' }, sumHost,
+        h('div', { class: 'hint' }, `테스트 잔액 기준. 계산 단계에서는 값 고르기의 "${v.name}${E.PART_SEP}고금리채무"처럼 골라 씁니다. 행별 원리금 = 원리금균등 월상환액(금리 ÷ 12, 기간, 잔액)`))));
+
+    // 고금리 기준: 전략 파라미터(비율·숫자)를 고르거나 숫자를 직접 넣는다
+    function drawHi() {
+      clear(hiHost);
+      const t = selected();
+      const cands = S.strategy.variables.filter(x => x.kind !== 'input' && (x.type === 'percent' || x.type === 'number'));
+      const cur = !t.hiRate ? '' : t.hiRate.k === 'var' ? `var:${t.hiRate.id}` : 'num';
+      hiHost.appendChild(select([['', '— 고르기 —'], ...cands.map(x => [`var:${x.id}`, `${x.name} (${E.fmtValue(x.value, x.type)})`]), ['num', '숫자 직접 입력']], cur, (k) => {
+        edit(x => { if (!k) delete x.hiRate; else x.hiRate = k === 'num' ? { k: 'num', v: 0 } : { k: 'var', id: k.slice(4) }; });
+        drawHi(); drawSums();
+      }));
+      if (t.hiRate && t.hiRate.k === 'num') hiHost.appendChild(numberField(t.hiRate.v, 'percent', (n) => { edit(x => { x.hiRate = { k: 'num', v: n ?? 0 }; }); drawSums(); }));
+    }
+
+    // 행별 원리금·합계 — 칸을 고칠 때마다 다시 계산한다(입력 칸은 다시 그리지 않아 커서가 유지된다)
+    function drawSums() {
+      const t = selected();
+      clear(sumHost);
+      const r = t.hiRate;
+      const hiVar = r && r.k === 'var' ? S.strategy.variables.find(x => x.id === r.id) : null;
+      const hi = r && r.k === 'num' ? r.v : hiVar ? E.toNum(hiVar.value) : null;
+      let d;
+      try { d = E.debtAggregate(t, hi, null); } catch (e) {
+        payCells.forEach(c => { c.textContent = '—'; });
+        sumHost.appendChild(h('span', { class: 'err' }, e.message));
+        return;
+      }
+      d.rows.forEach((x, i) => { if (payCells[i]) payCells[i].textContent = x.balance ? `${E.fmtValue(x.pay, 'money')}${x.high ? ' · 고금리' : ''}` : '—'; });
+      sumHost.append(...E.DEBT_PARTS.map(([k, label]) => h('div', { class: 'debt-sum-item' }, h('span', { class: 'muted small' }, label),
+        h('strong', {}, d.parts[k] === undefined ? '고금리 기준 필요' : E.fmtValue(d.parts[k], 'money')))));
+    }
 
     function drawGrid() {
       const keep = keepScroll(gridHost);
       clear(gridHost);
       const t = selected();
       const tbody = h('tbody');
+      payCells = [];
       t.rows.forEach((row, i) => {
         const sector = h('input', { type: 'text', class: 'sector-input', value: row.sector });
         sector.addEventListener('change', () => { edit(x => { x.rows[i].sector = sector.value.trim(); }); });
         sector.addEventListener('paste', (ev) => pasteRows(ev, i));
-        const kind = select(DEBT_KINDS.map(k => [k, k]), row.kind, (k) => edit(x => { x.rows[i].kind = k; }));
+        const kind = select(DEBT_KINDS.map(k => [k, k]), row.kind, (k) => { edit(x => { x.rows[i].kind = k; }); drawSums(); });
         tbody.appendChild(h('tr', {},
           h('td', {}, sector),
           h('td', {}, kind),
-          h('td', {}, numberField(row.months, 'number', (n) => edit(x => { x.rows[i].months = n ?? 0; }))),
-          h('td', {}, numberField(row.rate, 'percent', (n) => edit(x => { x.rows[i].rate = n ?? 0; }))),
-          h('td', { class: 'bal' }, numberField(row.balance || 0, 'money', (n) => edit(x => { x.rows[i].balance = n ?? 0; }))),
+          h('td', {}, numberField(row.months, 'number', (n) => { edit(x => { x.rows[i].months = n ?? 0; }); drawSums(); })),
+          h('td', {}, numberField(row.rate, 'percent', (n) => { edit(x => { x.rows[i].rate = n ?? 0; }); drawSums(); })),
+          h('td', { class: 'bal' }, numberField(row.balance || 0, 'money', (n) => { edit(x => { x.rows[i].balance = n ?? 0; }); drawSums(); })),
+          payCells[i] = h('td', { class: 'num muted' }, '—'),
           h('td', { class: 'row-tools' }, h('button', {
             class: 'btn-icon', title: '행 삭제', 'aria-label': '행 삭제',
             onclick: () => { if (t.rows.length > 1) { edit(x => { x.rows.splice(i, 1); }); drawGrid(); } },
           }, '✕'))));
       });
       gridHost.appendChild(h('div', { class: 'table-scroll' }, h('table', { class: 'grid debt-grid' },
-        h('thead', {}, h('tr', {}, ['업권', '대출구분', '대출기간(개월)', '대출금리', '테스트 잔액', ''].map(x => h('th', {}, x)))),
+        h('thead', {}, h('tr', {}, ['업권', '대출구분', '대출기간(개월)', '대출금리', '테스트 잔액', '월 원리금', ''].map(x => h('th', {}, x)))),
         tbody)));
       gridHost.appendChild(h('div', { class: 'row-actions' },
         h('button', { class: 'btn btn-small', onclick: () => { edit(x => { x.rows.push({ sector: '새 업권', kind: '부동산 외', months: 36, rate: 0.1, balance: 0 }); }); drawGrid(); } }, '+ 행 추가')));
       const issues = E.validate({ variables: [t], nodes: [], edges: [] });
       if (issues.length) gridHost.appendChild(h('div', { class: 'field-error' }, issues.join(' / ')));
+      drawSums();
       keep();
     }
 
@@ -499,6 +542,7 @@
       root.App.flash(`부채표에 ${rows.length}줄을 붙여넣었습니다`, 'ok');
     }
 
+    drawHi();
     drawGrid();
     return wrap;
   }

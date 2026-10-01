@@ -13,6 +13,7 @@
   let draft = null, original = null;      // 편집 중인 전략 사본 / 패널을 열(저장한) 시점의 사본
   let hist = [], lastPush = 0;            // 사본 편집 되돌리기
   let resultHook = null;                  // 유형별 편집기가 미리보기 결과를 받아 그리는 곳(기초한도 계산 과정)
+  let pvaAt = 0, pvaPicked = null;        // 기초한도: 조각을 넣을 줄, 고른 조각
 
   const FORMATS = [['money', '금액(원)'], ['percent', '비율(%)'], ['number', '숫자']];
   const OP_LABEL = { '>=': '≥ 이상', '>': '> 초과', '<=': '≤ 이하', '<': '< 미만', '=': '= 같음', '<>': '≠ 다름' };
@@ -40,6 +41,7 @@
     }
     nodeId = id;
     pendingDelete = false;
+    pvaAt = Infinity; pvaPicked = null;   // 기초한도는 처음에 마지막 줄을 고른다
     if (id) resync(); else { draft = original = null; hist = []; }
     render();
   }
@@ -84,6 +86,13 @@
     const cur = st.nodes[i];
     st.nodes[i] = Object.assign(S.clone(d), { x: cur.x, y: cur.y });
     if (o.name !== d.name) E.renameInFormulas(st, o.name, d.name);
+    // 기초한도 줄 이름을 바꾸면 그 줄을 쓰는 고급 수식([단계 › 줄])도 함께 바꾼다
+    if (d.type === 'pva' && o.type === 'pva') {
+      for (const l of d.config.lines || []) {
+        const ol = (o.config.lines || []).find(x => x.id === l.id);
+        if (ol && ol.name !== l.name) E.renameInFormulas(st, `${d.name}${E.PART_SEP}${ol.name}`, `${d.name}${E.PART_SEP}${l.name}`);
+      }
+    }
     // 이 창에서 고친 전략 파라미터 값(기초한도 요소 조정) — 저장하면 변수에도 반영된다
     for (const dv of draft.variables) {
       const ov = original.variables.find(v => v.id === dv.id), sv = st.variables.find(v => v.id === dv.id);
@@ -222,11 +231,11 @@
     if (resultHook) updateResult();
   }
 
-  // 고급 수식에 쓸 수 있는 이름: 변수·단계 + 기초한도 중간값(예: 기초 PVA › 실질월가처분소득)
+  // 고급 수식에 쓸 수 있는 이름: 변수·단계 + 중간값(예: 기초 PVA › 실질월가처분소득, 보유부채 › 고금리채무)
   function allNames(excludeId) {
     const s = S.strategy;
-    return [...s.variables.map(v => v.name), ...s.nodes.filter(x => x.id !== excludeId).flatMap(x =>
-      [x.name, ...(E.PARTS[x.type] || []).map(([, label]) => `${x.name}${E.PART_SEP}${label}`)])];
+    return [...s.variables, ...s.nodes.filter(x => x.id !== excludeId)].flatMap(x =>
+      [x.name, ...E.partsOf(x).map(([, label]) => `${x.name}${E.PART_SEP}${label}`)]);
   }
 
   // ── 공용 입력 부품 ──────────────────────────────────────────────────────
@@ -257,22 +266,29 @@
     if (direct.length) sel.appendChild(optgroup('직접 입력', direct));
     // 화살표가 두 개 이상 들어오는 단계(자동 합류)에서만 — 이번에 지나온 쪽 앞 단계의 값
     if (s.edges.filter(e => e.to === nodeId).length >= 2 || (ref && ref.k === 'in')) sel.appendChild(optgroup('합류', [['in', E.IN_NAME]]));
-    const vars = s.variables.filter(v => v.type !== 'table' && v.type !== 'debt');
-    const ins = vars.filter(v => v.kind === 'input'), pars = vars.filter(v => v.kind !== 'input');
-    if (ins.length) sel.appendChild(optgroup('고객 입력값', ins.map(v => [`var:${v.id}`, v.name])));
+    // 기초한도 줄 편집: 이 단계의 위 줄들과 현가계수
+    if (o.lines) sel.appendChild(optgroup('이 기초한도', [...o.lines.map(([id, name]) => [`line:${id}`, name]), ['pvf', E.PVF_NAME]]));
+    const vars = s.variables.filter(v => v.type !== 'table');
+    // 부채표는 값 대신 합계(월 원리금 합계·총채무·부동산 잔액·신용채무·고금리채무)를 고른다
+    const ins = vars.filter(v => v.kind === 'input'), pars = vars.filter(v => v.kind !== 'input' && v.type !== 'debt');
+    if (ins.length) sel.appendChild(optgroup('고객 입력값', ins.flatMap(v => v.type === 'debt'
+      ? E.partsOf(v).map(([part, label]) => [`part:${v.id}:${part}`, `${v.name}${E.PART_SEP}${label}`])
+      : [[`var:${v.id}`, v.name]])));
     if (pars.length) sel.appendChild(optgroup('전략 파라미터', pars.map(v => [`var:${v.id}`, `${v.name} (${E.fmtValue(v.value, v.type)})`])));
     const { order } = E.order(s);
     const byId = new Map(s.nodes.map(n => [n.id, n]));
     const nodes = [...order, ...s.nodes.map(n => n.id).filter(id => !order.includes(id))].map(id => byId.get(id)).filter(n => n.id !== o.exclude);
-    // 기초한도·부채 집계 단계는 중간값(실질월가처분소득·고금리채무 등)도 고를 수 있다
+    // 기초한도 단계는 중간값(실질월가처분소득·현가계수 등)도 고를 수 있다
     if (nodes.length) sel.appendChild(optgroup('계산 단계', nodes.flatMap(n => [[`node:${n.id}`, n.name],
-      ...(E.PARTS[n.type] || []).map(([part, label]) => [`part:${n.id}:${part}`, `${n.name}${E.PART_SEP}${label}`])])));
+      ...E.partsOf(n).map(([part, label]) => [`part:${n.id}:${part}`, `${n.name}${E.PART_SEP}${label}`])])));
 
     let cur = '';
     if (ref) {
       if (ref.k === 'var' || ref.k === 'node') cur = `${ref.k}:${ref.id}`;
       else if (ref.k === 'part') cur = `part:${ref.id}:${ref.part}`;
       else if (ref.k === 'in') cur = 'in';
+      else if (ref.k === 'line') cur = `line:${ref.id}`;
+      else if (ref.k === 'pvf') cur = 'pvf';
       else if (ref.k === 'num') cur = o.boolOf && (ref.v === 1 || ref.v === 0) ? `bool:${ref.v}` : 'num';
       else if (ref.k === 'str') cur = o.choiceOf && (o.choiceOf.options || []).includes(ref.v) ? `opt:${ref.v}` : 'str';
     }
@@ -295,6 +311,8 @@
       const v = sel.value;
       if (!v) current = null;
       else if (v === 'in') current = { k: 'in' };
+      else if (v === 'pvf') current = { k: 'pvf' };
+      else if (v.startsWith('line:')) current = { k: 'line', id: v.slice(5) };
       else if (v === 'num') current = { k: 'num', v: current && current.k === 'num' ? current.v : 0 };
       else if (v === 'str') current = { k: 'str', v: current && current.k === 'str' ? current.v : '' };
       else if (v.startsWith('bool:')) current = { k: 'num', v: Number(v.slice(5)) };
@@ -405,82 +423,142 @@
 
   // ── 유형별 편집기 ───────────────────────────────────────────────────────
   const EDITORS = {
-    // 부채 집계: 부채표 + 고금리 기준 → 행별 원리금과 합계(중간값 5개)
-    debt(n, c) {
-      const tables = S.strategy.variables.filter(v => v.type === 'debt');
-      const tableSel = select([['', tables.length ? '— 부채표 선택 —' : '(부채표가 없습니다 — 변수·표 탭에서 "+ 부채표"로 만드세요)'], ...tables.map(t => [t.id, t.name])],
-        c.table ? c.table.id : '', (id) => commit(() => { c.table = id ? { k: 'var', id } : null; }, true));
-      const t = c.table && tables.find(v => v.id === c.table.id);
-      const trace = h('div', { class: 'debt-trace' });
-      const wrap = h('div', { class: 'editor' },
-        field('부채표', h('div', { class: 'inline' }, tableSel,
-          t ? btn('변수·표 탭에서 고치기', () => root.App.showTab('vars', () => root.VarsTab.select(t.id))) : null),
-          '행마다 대출기간·금리는 전략값, 잔액은 고객 입력값(오른쪽 단일 시뮬레이션)입니다'),
-        field('고금리 기준', refPicker(c.hiRate, (r) => commit(() => { c.hiRate = r; }), { exclude: n.id, numFormat: 'percent' }),
-          '금리가 이 값 이상인 행의 잔액을 고금리채무로 합산합니다'),
-        field('합계 규칙', h('div', { class: 'hint' }, `대출구분이 "${E.DEBT_MORT}"인 행 → 부동산 잔액, 그 밖의 행 → 신용채무. 행별 원리금 = 원리금균등 월상환액(금리 ÷ 12, 기간, 잔액)`)),
-        field('계산 과정', trace));
-      resultHook = (st) => {
-        clear(trace);
-        if (st.skipped || !st.active) { trace.appendChild(h('span', { class: 'muted' }, '지금 테스트 입력값으로는 이 단계를 계산하지 않습니다')); return; }
-        if (st.error || !st.parts) { trace.appendChild(h('span', { class: 'err' }, st.error || '계산할 수 없습니다')); return; }
-        const used = st.rows.filter(x => x.balance);
-        if (used.length) {
-          trace.appendChild(h('div', { class: 'table-scroll' }, h('table', { class: 'grid preview-grid' },
-            h('thead', {}, h('tr', {}, ['업권', '대출구분', '잔액', '금리', '기간', '월 원리금', '고금리'].map((x, i) => h('th', { class: i >= 2 ? 'num' : '' }, x)))),
-            h('tbody', {}, used.map(x => h('tr', {},
-              h('td', {}, x.sector), h('td', {}, x.kind),
-              h('td', { class: 'num' }, E.fmtValue(x.balance, 'money')), h('td', { class: 'num' }, E.fmtValue(x.rate, 'percent')),
-              h('td', { class: 'num' }, `${E.fmtNum(x.months)}개월`), h('td', { class: 'num' }, E.fmtValue(x.pay, 'money')),
-              h('td', { class: 'num' }, x.high ? '고금리' : '—')))))));
-        } else {
-          trace.appendChild(h('div', { class: 'muted' }, '잔액이 있는 행이 없습니다 — 오른쪽 단일 시뮬레이션에서 잔액을 넣어 보세요'));
-        }
-        trace.appendChild(h('div', { class: 'debt-sum' }, E.DEBT_PARTS.map(([k, label]) =>
-          h('div', { class: 'debt-sum-item' }, h('span', { class: 'muted small' }, label), h('strong', {}, E.fmtValue(st.parts[k], 'money'))))));
-      };
-      return wrap;
-    },
-
-    // 기초한도: 공식 → 요소 8개(변수 고르기 + 전략 파라미터 값 조정) → 값을 넣은 계산 과정
+    // 기초한도: 공식(자동 표시) → 줄 편집(줄마다 이름 + 조각) → 넣기 → 현가계수 → 전략 파라미터 값 → 계산 과정
     pva(n, c) {
-      const L = Object.fromEntries(E.PVA_INPUTS.map(([k, label]) => [k, label]));
-      const wrap = h('div', { class: 'editor' });
+      c.lines = c.lines || [];
+      const lines = c.lines, wrap = h('div', { class: 'editor' });
+      if (pvaAt >= lines.length) pvaAt = lines.length - 1;
+      const no = (i) => (i < 20 ? String.fromCharCode(0x2460 + i) : `(${i + 1})`);   // ① ② …
+
+      // 수식 그림: 왼쪽 기본형(처음 4줄, 요소 이름) · 오른쪽 지금 식 — 줄을 고치면 오른쪽이 따라 바뀐다
+      const slotName = Object.fromEntries(E.PVA_SLOTS);
+      const base = E.pvaDefaultLines((k) => ({ t: 'ref', ref: { k: 'slot', id: k } }));
+      const baseName = (r) => (r.k === 'slot' ? slotName[r.id] : r.k === 'line' ? (base.find(l => l.id === r.id) || {}).name : '');
+      const curName = (r) => (r && r.k === 'num' ? E.fmtNum(r.v) : D.refText(r, n).replace(/^\[|\]$/g, ''));
+      wrap.appendChild(h('div', { class: 'mx-pair' },
+        pvaMath('기본형', base, slotName.rate, slotName.months, baseName),
+        pvaMath('지금 식', lines, c.rate ? curName(c.rate) : '(금리 미선택)', c.months ? curName(c.months) : '(기간 미선택)', curName)));
+
       wrap.appendChild(field('공식', h('ol', { class: 'pva-formula' },
-        h('li', {}, h('strong', {}, '불량률 조정소득'), ` = ${L.income} × (1 − ${L.bad} × ${L.annual})`),
-        h('li', {}, h('strong', {}, '월가처분소득'), ` = 불량률 조정소득 − ${L.pay} − ${L.living}`),
-        h('li', {}, h('strong', {}, '실질월가처분소득'), ` = 월가처분소득 × ${L.dsr}`),
-        h('li', {}, h('strong', {}, '기초 PVA'), ` = 실질월가처분소득 × 현가계수   현가계수 = [1 − (1 + 금리 ÷ 12)^−기간] ÷ (금리 ÷ 12)`))));
-      for (const [k, label, fmt] of E.PVA_INPUTS) {
-        const valHost = h('span', { class: 'pva-val' });
-        const drawVal = () => {
-          clear(valHost);
-          const r = c[k];
-          const v = r && r.k === 'var' && draft.variables.find(x => x.id === r.id);
-          if (!v) return;
-          if (v.kind === 'input') { valHost.appendChild(h('span', { class: 'hint' }, '고객 입력값 — 테스트 값은 오른쪽 단일 시뮬레이션에서 바꿉니다')); return; }
-          if (!['money', 'number', 'percent'].includes(v.type)) return;
-          valHost.append(h('span', { class: 'muted small' }, '파라미터 값'),
-            numberField(v.value, v.type, (x) => commit((m, st) => { st.variables.find(y => y.id === v.id).value = x ?? 0; })));
-        };
-        const picker = refPicker(c[k], (r) => { commit(() => { c[k] = r; }); drawVal(); }, { exclude: n.id, numFormat: fmt });
-        drawVal();
-        wrap.appendChild(field(label, h('div', { class: 'inline' }, picker, valHost)));
+        lines.map((l, i) => h('li', { class: i === lines.length - 1 ? 'pva-last' : '' }, h('strong', {}, l.name), ` = ${D.tokensText(l.tokens, n) || '(식 없음)'}`)),
+        h('li', { class: 'pva-pvf' }, h('strong', {}, E.PVF_NAME), ` = [1 − (1 + ${D.refText(c.rate)} ÷ 12)^−${D.refText(c.months)}] ÷ (${D.refText(c.rate)} ÷ 12)`)),
+        '마지막 줄이 기초한도 값입니다. 아래에서 줄을 고치면 공식도 따라 바뀝니다'));
+
+      // 줄 편집 — 줄을 누르면 그 줄에 조각을 넣는다
+      const box = h('div', { class: 'pva-lines' });
+      lines.forEach((l, i) => {
+        const nameIn = h('input', { type: 'text', class: 'pva-line-name', value: l.name, 'aria-label': `${i + 1}번째 줄 이름` });
+        nameIn.addEventListener('change', () => {
+          const v = nameIn.value.trim();
+          const problem = !v ? '줄 이름을 비울 수 없습니다' : /[\[\]›]/.test(v) ? '줄 이름에 [ ] › 를 쓸 수 없습니다'
+            : lines.some((x, j) => j !== i && x.name === v) ? '같은 이름의 줄이 있습니다' : '';
+          if (problem) { nameIn.value = l.name; root.App.flash(problem, 'danger'); return; }
+          if (v !== l.name) commit(() => { l.name = v; }, true);
+        });
+        const row = h('div', { class: 'token-row' });
+        (l.tokens || []).forEach((t, j) => {
+          const el = h('span', { class: `token token-${t.t}${t.ref && (t.ref.k === 'line' || t.ref.k === 'pvf') ? ' token-own' : ''}${i === pvaAt && j === pvaPicked ? ' picked' : ''}`,
+            draggable: 'true', tabindex: '0', 'data-i': j, title: '눌러서 고르기 · 끌어서 순서 바꾸기' }, D.tokenText(t, n));
+          el.addEventListener('click', (ev) => { ev.stopPropagation(); pvaPicked = i === pvaAt && pvaPicked === j ? null : j; pvaAt = i; renderBody(); });
+          el.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); el.click(); }
+            if ((ev.key === 'Delete' || ev.key === 'Backspace') && i === pvaAt && pvaPicked === j) { ev.preventDefault(); pvaPicked = null; commit(() => l.tokens.splice(j, 1), true); }
+          });
+          row.appendChild(el);
+        });
+        if (!(l.tokens || []).length) row.appendChild(h('span', { class: 'muted' }, '아래 [넣기]로 값과 연산 기호를 넣으세요'));
+        tokenDrag(row, l);
+        const move = (d) => commit(() => { const [x] = lines.splice(i, 1); lines.splice(i + d, 0, x); pvaAt = i + d; pvaPicked = null; }, true);
+        const tools = h('span', { class: 'pva-line-tools' },
+          i > 0 ? h('button', { class: 'btn-icon', type: 'button', title: '위로', 'aria-label': '위로', onclick: (ev) => { ev.stopPropagation(); move(-1); } }, '↑') : null,
+          i < lines.length - 1 ? h('button', { class: 'btn-icon', type: 'button', title: '아래로', 'aria-label': '아래로', onclick: (ev) => { ev.stopPropagation(); move(1); } }, '↓') : null,
+          lines.length > 1 ? xBtn((ev) => { ev.stopPropagation(); commit(() => { lines.splice(i, 1); pvaAt = Math.min(i, lines.length - 1); pvaPicked = null; }, true); }, '줄 삭제') : null);
+        const lineEl = h('div', { class: `pva-line-edit${i === pvaAt ? ' active' : ''}${i === lines.length - 1 ? ' pva-last' : ''}` },
+          h('span', { class: 'pva-no' }, no(i)), nameIn, h('span', { class: 'pva-eq' }, '='), row, tools);
+        lineEl.addEventListener('click', (ev) => {
+          if (i === pvaAt || ev.target.closest('input')) { if (i !== pvaAt) { pvaAt = i; pvaPicked = null; box.querySelectorAll('.pva-line-edit').forEach((x, k) => x.classList.toggle('active', k === i)); drawAdder(); } return; }
+          pvaAt = i; pvaPicked = null; renderBody();
+        });
+        box.appendChild(lineEl);
+      });
+      box.appendChild(h('div', { class: 'row-actions' }, btn('+ 줄 추가', () => commit(() => {
+        let k = lines.length + 1;
+        while (lines.some(x => x.name === `새 줄 ${k}`)) k++;
+        lines.push({ id: E.newId('l'), name: `새 줄 ${k}`, tokens: [] });
+        pvaAt = lines.length - 1; pvaPicked = null;
+      }, true))));
+      wrap.appendChild(field('줄 편집', box, '줄을 눌러 고른 뒤 아래 [넣기]로 조각을 넣습니다. 위 줄의 값과 현가계수를 조각으로 쓸 수 있습니다. 새 줄은 맨 아래(기초한도 자리)에 붙으니 ↑↓로 옮기세요'));
+
+      // 넣기 — 고른 줄에 값·연산 기호를 넣는다(사칙연산 단계와 같은 방식)
+      const adderHost = h('div');
+      const drawAdder = () => {
+        clear(adderHost);
+        const l = lines[pvaAt];
+        if (!l) return;
+        let pending = null;
+        const picker = refPicker(null, (r) => { pending = r; }, { exclude: n.id, lines: lines.slice(0, pvaAt).map((x, j) => [x.id, `${no(j)} ${x.name}`]) });
+        const push = (tok) => commit(() => l.tokens.push(tok), true);
+        const opBtn = (label, tok) => h('button', { class: 'btn-op', type: 'button', onclick: () => push(tok) }, label);
+        const delPicked = btn('고른 조각 삭제', () => { if (pvaPicked !== null) { const j = pvaPicked; pvaPicked = null; commit(() => l.tokens.splice(j, 1), true); } });
+        delPicked.disabled = pvaPicked === null;
+        let err = '';
+        try { if (l.tokens.length) E.parseTokens(l.tokens); } catch (e) { err = e.message; }
+        adderHost.append(h('div', { class: 'token-adder' },
+          h('span', { class: 'pva-target' }, `${no(pvaAt)} ${l.name}에`),
+          picker,
+          btn('값 넣기', () => { if (!pending) return; push(pending.k === 'num' ? { t: 'num', v: pending.v } : { t: 'ref', ref: pending }); }, 'btn-accent'),
+          h('span', { class: 'op-group' },
+            opBtn('+', { t: 'op', v: '+' }), opBtn('−', { t: 'op', v: '-' }), opBtn('×', { t: 'op', v: '*' }), opBtn('÷', { t: 'op', v: '/' }),
+            opBtn('^', { t: 'op', v: '^' }), opBtn('(', { t: 'lp' }), opBtn(')', { t: 'rp' })),
+          l.tokens.length ? delPicked : null,
+          l.tokens.length ? btn('마지막 조각 지우기', () => { pvaPicked = null; commit(() => l.tokens.pop(), true); }) : null));
+        if (err) adderHost.appendChild(h('div', { class: 'err' }, `${no(pvaAt)} ${l.name}: ${err}`));
+      };
+      drawAdder();
+      wrap.appendChild(field('넣기', adderHost, '곱셈·나눗셈이 덧셈·뺄셈보다 먼저 계산됩니다. 계산 순서를 바꾸려면 괄호를 넣으세요'));
+
+      // 현가계수
+      const pvfVal = h('span', { class: 'muted' });
+      wrap.appendChild(field(E.PVF_NAME, h('div', { class: 'inline' },
+        h('span', { class: 'muted small' }, '금리(연)'), refPicker(c.rate, (r) => commit(() => { c.rate = r; }, true), { exclude: n.id, numFormat: 'percent' }),
+        h('span', { class: 'muted small' }, '기간(개월)'), refPicker(c.months, (r) => commit(() => { c.months = r; }, true), { exclude: n.id }),
+        pvfVal), '현가계수 = [1 − (1 + 금리 ÷ 12)^−기간] ÷ (금리 ÷ 12). 줄에서 [현가계수] 조각으로 씁니다'));
+
+      // 이 기초한도가 쓰는 전략 파라미터 — 값을 여기서 고치면 저장할 때 변수·표 탭의 값도 바뀐다
+      const used = new Set();
+      const walk = (x) => { if (x && typeof x === 'object') { if (x.k === 'var') used.add(x.id); Object.values(x).forEach(walk); } };
+      walk(c);
+      const params = draft.variables.filter(v => used.has(v.id) && v.kind !== 'input' && ['money', 'number', 'percent'].includes(v.type));
+      if (params.length) {
+        wrap.appendChild(field('파라미터 값', h('div', { class: 'pva-params' }, params.map(v => h('label', { class: 'pva-val' },
+          h('span', { class: 'muted small' }, v.name),
+          numberField(v.value, v.type, (x) => commit((m, st) => { st.variables.find(y => y.id === v.id).value = x ?? 0; }))))),
+          '전략 파라미터 값을 여기서 고치면 저장할 때 변수·표 탭의 값도 바뀝니다(그 변수를 쓰는 다른 단계에도 적용)'));
       }
-      wrap.appendChild(h('div', { class: 'hint' }, '전략 파라미터 값을 여기서 고치면 저장할 때 변수·표 탭의 값도 바뀝니다(그 변수를 쓰는 다른 단계에도 적용)'));
+
       const trace = h('div', { class: 'pva-trace' });
       wrap.appendChild(field('계산 과정', trace));
+      // 조각 값의 표시 형식: 변수는 그 형식, 단계는 결과 표시 형식, 줄·부채표 합계는 금액, 현가계수는 소수 4자리
+      const fmtOf = (ref) => {
+        if (!ref) return 'number';
+        if (ref.k === 'var') { const v = draft.variables.find(x => x.id === ref.id); return v ? v.type : 'number'; }
+        if (ref.k === 'node') { const x = draft.nodes.find(y => y.id === ref.id); return (x && x.format) || 'number'; }
+        if (ref.k === 'part') return ref.part === 'factor' ? 'pvf' : 'money';
+        if (ref.k === 'pvf') return 'pvf';
+        return 'money';
+      };
+      const fmtVal = (v, f) => (f === 'pvf' ? E.fmtNum(v, 4) : E.fmtValue(v, f));
       resultHook = (st) => {
         clear(trace);
+        clear(pvfVal);
+        if (st.factor !== undefined) pvfVal.textContent = `→ ${E.fmtNum(st.factor, 4)}`;
         if (st.skipped || !st.active) { trace.appendChild(h('span', { class: 'muted' }, '지금 테스트 입력값으로는 이 단계를 계산하지 않습니다')); return; }
-        if (st.error || !st.parts) { trace.appendChild(h('span', { class: 'err' }, st.error || '계산할 수 없습니다')); return; }
-        const g = st.inputs, p = st.parts, f = (v, t) => E.fmtValue(v, t);
-        const line = (no, expr, val, t) => h('div', { class: 'pva-line' }, h('span', { class: 'pva-no' }, no), h('span', {}, expr), h('strong', {}, `= ${f(val, t)}`));
-        trace.append(
-          line('①', `${f(g.income, 'money')} × (1 − ${f(g.bad, 'percent')} × ${E.fmtNum(g.annual)})`, p.adjinc, 'money'),
-          line('②', `${f(p.adjinc, 'money')} − ${f(g.pay, 'money')} − ${f(g.living, 'money')}`, p.free, 'money'),
-          line('③', `${f(p.free, 'money')} × ${f(g.dsr, 'percent')}`, p.realfree, 'money'),
-          line('④', `${f(p.realfree, 'money')} × 현가계수 ${E.fmtNum(p.factor, 4)} (연 ${f(g.rate, 'percent')}, ${E.fmtNum(g.months)}개월)`, st.value, 'money'));
+        for (const [i, x] of (st.lines || []).entries()) {
+          const l = lines.find(y => y.id === x.id) || { tokens: [] };
+          const expr = l.tokens.map((t, j) => (t.t === 'ref' ? fmtVal(x.vals[j], fmtOf(t.ref)) : D.tokenText(t, n))).join(' ');
+          trace.appendChild(h('div', { class: 'pva-line' }, h('span', { class: 'pva-no' }, `${no(i)} ${x.name}`), h('span', {}, expr), h('strong', {}, `= ${E.fmtValue(x.value, 'money')}`)));
+        }
+        if (st.error) trace.appendChild(h('span', { class: 'err' }, st.error));
       };
       return wrap;
     },
@@ -623,14 +701,6 @@
         field('통과하면', refPicker(c.input, (r) => commit(() => { c.input = r; }), { exclude: n.id, optional: true }), '조건에 안 걸렸을 때 이 단계의 값. 비워 두면 "통과"로만 표시합니다'));
     },
 
-    pv(n, c) {
-      return h('div', { class: 'editor' },
-        field('연 금리', refPicker(c.rate, (r) => commit(() => { c.rate = r; }), { exclude: n.id, numFormat: 'percent' })),
-        field('기간(개월)', refPicker(c.months, (r) => commit(() => { c.months = r; }), { exclude: n.id })),
-        field('월 상환액', refPicker(c.payment, (r) => commit(() => { c.payment = r; }), { exclude: n.id, optional: true }),
-          '결과 = 월 상환액 × 연금현가계수, 월 금리 = 연 금리 ÷ 12. 비워 두면 계수만 계산합니다'));
-    },
-
     branch(n, c) {
       const wrap = h('div', { class: 'editor' });
       const labels = () => [...c.cases.map(k => k.label), c.elseLabel || '그 외'];
@@ -660,6 +730,54 @@
     },
 
   };
+
+  // ── 기초한도 수식 그림 ──────────────────────────────────────────────────
+  // 줄 식을 수식 모양으로 그린다: ÷ → 분수, ^ → 위첨자, 현가계수 → [1 − (1 + r)^−n] ÷ r (r = 금리 ÷ 12, n = 기간).
+  // 괄호는 조각의 괄호가 아니라 계산 순서로 정한다(분수의 위·아래는 괄호 없이). 변수는 한글 이름 그대로 쓴다
+  const MX_PREC = { '+': 1, '-': 1, '*': 2, '/': 2.5, '^': 3 };
+  const MX_OP = { '+': '+', '-': '−', '*': '×' };
+  function mathOf(ast, nameOf) {
+    const mi = (t) => h('i', { class: 'mx-var' }, t);
+    const frac = (a, b) => h('span', { class: 'mx-frac' }, h('span', { class: 'mx-num' }, a), h('span', { class: 'mx-den' }, b));
+    const paren = (x) => h('span', { class: 'mx-paren' }, '(', x, ')');
+    const go = (x, outer) => {
+      let el, own = 4;
+      if (x.k === 'num') el = h('span', {}, E.fmtNum(x.v));
+      else if (x.k === 'ref' && x.ref && x.ref.k === 'pvf') el = frac(h('span', {}, '1 − ', paren(h('span', {}, '1 + ', mi('r'))), h('sup', {}, '−', mi('n'))), mi('r'));
+      else if (x.k === 'ref') el = h('span', { class: 'mx-name' }, x.ref ? nameOf(x.ref) || '?' : '(빈 값)');
+      else if (x.k === 'neg') { own = 3.5; el = h('span', {}, '−', go(x.a, 3.5)); }
+      else if (x.k === 'bin' && x.op === '/') { own = MX_PREC['/']; el = frac(go(x.a, 0), go(x.b, 0)); }
+      else if (x.k === 'bin' && x.op === '^') { own = 3; el = h('span', {}, go(x.a, 3.1), h('sup', {}, go(x.b, 0))); }
+      else if (x.k === 'bin' && MX_OP[x.op]) {
+        own = MX_PREC[x.op];
+        // 오른쪽은 같은 순위도 괄호(a − (b − c)), × 의 오른쪽 분수는 괄호 없이
+        el = h('span', {}, go(x.a, own), ` ${MX_OP[x.op]} `, go(x.b, x.op === '-' ? own + 0.1 : own));
+      } else el = h('span', {}, '?');
+      return own < outer ? paren(el) : el;
+    };
+    return go(ast, 0);
+  }
+
+  // 수식 카드: 마지막 줄을 크게, 위 줄들은 가까운 것부터 정의로, 현가계수를 쓰면 r·n 뜻을 붙인다
+  function pvaMath(title, lines, rateName, monthsName, nameOf) {
+    const uses = (l) => (l.tokens || []).some(t => t.t === 'ref' && t.ref && t.ref.k === 'pvf');
+    const eq = (l, cls) => {
+      let body;
+      if (!(l.tokens || []).length) body = h('span', { class: 'muted' }, '(식 없음)');
+      else {
+        try { body = mathOf(E.parseTokens(l.tokens), nameOf); }
+        catch (e) { body = h('span', { class: 'err' }, e.message); }
+      }
+      return h('div', { class: cls }, h('span', { class: 'mx-name' }, l.name), ' = ', body);
+    };
+    const last = lines[lines.length - 1];
+    return h('div', { class: 'mx-card' },
+      h('div', { class: 'mx-title' }, title),
+      last ? eq(last, 'mx-main') : h('div', { class: 'muted' }, '(줄 없음)'),
+      h('div', { class: 'mx-defs' },
+        lines.slice(0, -1).reverse().map(l => eq(l, 'mx-def')),
+        lines.some(uses) ? h('div', { class: 'mx-def' }, h('i', { class: 'mx-var' }, 'r'), ` = ${rateName} ÷ 12,  `, h('i', { class: 'mx-var' }, 'n'), ` = ${monthsName}`) : null));
+  }
 
   // ── 삭제 ────────────────────────────────────────────────────────────────
   function deleteArea(n) {
