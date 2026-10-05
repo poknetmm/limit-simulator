@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>한도 시뮬레이터</title>
+<title>Limit Studio · 스튜디오</title>
 <!-- 외부 주소(CDN·웹폰트)를 부르지 않는다 — 회사 화이트리스트에 페이지 주소 하나만 두기 위해서다 -->
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/app.css">
@@ -12,8 +12,8 @@
 <body class="auth-pending">
 <section id="loginScreen" class="login-screen" aria-label="로그인">
   <form id="loginForm" class="login-card">
-    <div class="login-brand">한도 시뮬레이터</div>
-    <div class="login-sub">한도 전략 시뮬레이터</div>
+    <div class="login-brand"><svg class="brand-s login-s" viewBox="0 0 32 32" aria-hidden="true"><use href="#ci-s"/></svg>Limit <span class="lt">Studio</span></div>
+    <div class="login-sub">by S · 한도 스튜디오</div>
     <label class="sr-only" for="loginEmail">이메일</label>
     <input id="loginEmail" class="login-input" type="email" autocomplete="username" placeholder="이메일" required>
     <label class="sr-only" for="loginPassword">비밀번호</label>
@@ -29,7 +29,10 @@
 
 <!-- 아이콘 — 인라인 SVG(외부 주소를 부르지 않는다). <svg class="ico"><use href="#..."/></svg>로 쓴다 -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M4 18h16M6 18V11M10 18V7M14 18v-5M18 18V9"/></symbol>
+  <symbol id="ci-s" viewBox="0 0 32 32">
+    <rect width="32" height="32" rx="8" fill="var(--accent)"/>
+    <g fill="var(--accent-ink)"><circle cx="12.6" cy="5.8" r="1.3"/><circle cx="16.0" cy="5.8" r="1.3"/><circle cx="19.4" cy="5.8" r="1.3"/><circle cx="9.2" cy="9.2" r="1.3"/><circle cx="22.8" cy="9.2" r="1.3"/><circle cx="9.2" cy="12.6" r="1.3"/><circle cx="12.6" cy="16.0" r="1.3"/><circle cx="16.0" cy="16.0" r="1.3"/><circle cx="19.4" cy="16.0" r="1.3"/><circle cx="22.8" cy="19.4" r="1.3"/><circle cx="9.2" cy="22.8" r="1.3"/><circle cx="22.8" cy="22.8" r="1.3"/><circle cx="12.6" cy="26.2" r="1.3"/><circle cx="16.0" cy="26.2" r="1.3"/><circle cx="19.4" cy="26.2" r="1.3"/></g>
+  </symbol>
   <symbol id="i-pleft" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></symbol>
   <symbol id="i-pright" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -63,7 +66,7 @@
 </defs></svg>
 
 <header class="topbar">
-  <div class="brand"><span class="logo-mark"><svg class="ico"><use href="#i-logo"/></svg></span><span class="brand-name">한도 시뮬레이터</span></div>
+  <div class="brand"><svg class="brand-s" viewBox="0 0 32 32" aria-hidden="true"><use href="#ci-s"/></svg><span class="brand-name">Limit <span class="lt">Studio</span><small>by S · 스튜디오</small></span></div>
   <button id="toggleMenu" class="icon-btn" type="button" aria-controls="sidemenu" aria-expanded="false" aria-label="왼쪽 패널 열기·닫기" data-tip="왼쪽 패널 열기·닫기|단계 팔레트 · 전략 파일"><svg class="ico"><use href="#i-pleft"/></svg></button>
   <!-- 전략 이름은 표시만 한다(이름은 저장할 때 정함). 누르면 전략 목록 — 메뉴를 열지 않아도 불러올 수 있게 -->
   <button id="strategyTitle" class="strategy-title" type="button"></button>

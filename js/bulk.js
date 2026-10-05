@@ -329,7 +329,7 @@
   async function onBaseFile(f) {
     try {
       const st = JSON.parse(await f.text());
-      if (!st || !Array.isArray(st.nodes) || !Array.isArray(st.variables)) throw new Error('한도 시뮬레이터 전략 파일이 아닙니다');
+      if (!st || !Array.isArray(st.nodes) || !Array.isArray(st.variables)) throw new Error('한도 스튜디오 전략 파일이 아닙니다');
       E.migrate(st);
       base = { strategy: st, label: `${st.meta && st.meta.name || f.name} (${f.name})`, at: new Date() };
       cmp = null;

@@ -137,8 +137,8 @@
   // 가져오기 실패 사유를 돌려준다(성공이면 null)
   function importJson(text) {
     let s;
-    try { s = JSON.parse(text); } catch (e) { return '파일을 읽을 수 없습니다 — 한도 시뮬레이터에서 내보낸 .json 파일인지 확인하세요'; }
-    if (!checkShape(s)) return '한도 시뮬레이터 전략 파일 형식이 아닙니다';
+    try { s = JSON.parse(text); } catch (e) { return '파일을 읽을 수 없습니다 — 한도 스튜디오에서 내보낸 .json 파일인지 확인하세요'; }
+    if (!checkShape(s)) return '한도 스튜디오 전략 파일 형식이 아닙니다';
     load(s, 'import');
     return null;
   }
