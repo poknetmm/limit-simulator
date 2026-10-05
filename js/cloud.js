@@ -55,6 +55,9 @@
 
   const mine = (c) => !!(c && user && c.owner_id === user.id);
   const canSave = () => !!user && (!S.state.cloud || mine(S.state.cloud));
+  // 서버 보관 30일(003_limitsim_retention.sql) — 마지막 수정 후 30일이 지나면 매일 03:00에 지워진다
+  const KEEP_DAYS = 30;
+  const daysLeft = (t) => Math.max(0, Math.ceil((+new Date(t) + KEEP_DAYS * 864e5 - Date.now()) / 864e5));
   const when = (t) => { const d = new Date(t); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
   const who = (email) => String(email || '').split('@')[0] || '(알 수 없음)';
 
@@ -175,7 +178,7 @@
       const row = data && data[0];
       if (!row) { S.unlinkCloud(); flash('서버의 이 버전이 삭제되었습니다 — 다른 이름으로 저장하세요', 'danger'); return saveAs(); }
       S.markCloudSaved(info(row));
-      flash(`서버에 저장했습니다 — "${row.name}" v${row.version}`, 'ok');
+      flash(`서버에 저장했습니다 — "${row.name}" v${row.version} (서버 보관 ${KEEP_DAYS}일)`, 'ok');
       return true;
     } catch (e) { flash(`서버 저장 실패: ${msg(e)}`, 'danger'); return false; }
   }
@@ -204,6 +207,7 @@
         h('label', { class: 'saveas-opt' }, rNew, h('span', {}, h('strong', {}, '새 전략으로'), h('span', { class: 'muted small' }, ' — 목록에 별개의 전략으로 생깁니다'))),
         h('div', { class: 'saveas-field' }, h('span', { class: 'muted small' }, '이름'), name),
         h('div', { class: 'saveas-field' }, h('span', { class: 'muted small' }, '메모'), note),
+        h('div', { class: 'hint' }, `서버는 작업 공간입니다 — 마지막 수정 후 ${KEEP_DAYS}일이 지나면 자동 삭제됩니다. 보관은 "로컬 PC에 저장(내보내기)"으로 하세요.`),
         err, go);
       sync();
       const m = modal('서버에 다른 이름으로 저장', form, false, () => { if (!done) resolve(false); });
@@ -292,6 +296,7 @@
           isHead ? h('strong', {}, r.name) : null,
           h('span', { class: 'badge badge-neutral' }, `v${r.version}`),
           h('span', { class: 'muted small' }, when(r.updated_at)),
+          h('span', { class: `badge ${daysLeft(r.updated_at) <= 3 ? 'badge-danger' : 'badge-neutral'}`, title: '서버 보관은 마지막 수정 후 30일입니다. 보관하려면 "로컬 PC에 저장"으로 내려받으세요' }, `${daysLeft(r.updated_at)}일 후 삭제`),
           own ? null : h('span', { class: 'muted small' }, `작성 ${who(r.owner_email)}`),
           r.copied_from ? h('span', { class: 'muted small' }, '복사본') : null,
           r.note ? h('span', { class: 'cloud-note-text' }, r.note) : null,
