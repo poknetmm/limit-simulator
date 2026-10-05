@@ -9,6 +9,8 @@
    · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
    · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다. 고른 도형은 Delete 키로 지운다(예/아니오 확인)
    · 위치가 없는 단계(예시 전략·가져온 파일)는 자동 배치한다
+   · 단계 추가는 왼쪽 패널의 단계 팔레트(유형 타일)에서 한다. 도형 안쪽은 머리줄(아이콘·이름) / 구분선 / 유형·값
+   · 테스트 입력값을 바꾸면 지나간 화살표를 따라 빛이 한 번 흐르고, 값이 바뀐 도형은 반짝인다(애니메이션 줄이기면 끔)
    화살표는 "흐름(어느 경로를 탔는가)"이고, 계산에 쓰는 값은 설정 패널의 참조가 정한다.
    ========================================================================== */
 (function (root) {
@@ -19,12 +21,30 @@
   const ZOOM_KEY = 'limitsim.zoom';
   const SVGNS = 'http://www.w3.org/2000/svg';
 
-  let host, scrollEl, sizer, stage, svg, zoomLabel, addSelect, drawer, dot;
+  let host, scrollEl, sizer, stage, svg, zoomLabel, drawer, dot;
   let selectedNode = null, selectedEdge = null;
   let zoom = 1;
   let result = null;
   let drag = null;       // {kind:'move'|'connect', ...}
   let connecting = false; // 화살표를 끄는 중(가장자리 위 점 표시를 멈춘다)
+  let lastVals = null;    // 도형별 지난 표시값 — 바뀐 도형만 반짝이게
+  let lastHit = new Set();// 지난번에 걸린 컷오프
+  let born = null;        // 방금 넣은 도형(등장 애니메이션)
+  let pendingReason = null;
+
+  // 단계 팔레트 묶음 — 타일 색은 묶음별(계산 = 강조, 조회 = 초록, 흐름 = 파랑, 컷오프 = 빨강)
+  const PALETTE = [['계산', ['pva', 'arith', 'formula']], ['조회', ['lookup', 'progressive']], ['흐름 제어', ['cond', 'branch', 'minmax', 'cutoff']]];
+  const CAT = { pva: 'calc', arith: 'calc', formula: 'calc', lookup: 'look', progressive: 'look', cond: 'flow', branch: 'flow', minmax: 'flow', cutoff: 'cut' };
+  function icon(id, cls) {
+    const el = document.createElementNS(SVGNS, 'svg');
+    el.setAttribute('class', `ico${cls ? ` ${cls}` : ''}`);
+    el.setAttribute('aria-hidden', 'true');
+    const u = document.createElementNS(SVGNS, 'use');
+    u.setAttribute('href', `#${id}`);
+    el.appendChild(u);
+    return el;
+  }
+  const chip = (type) => h('span', { class: `chip-ico c-${CAT[type] || 'calc'}` }, icon(`t-${type}`));
 
   // ── 기본 설정값(유형을 새로 고를 때) ─────────────────────────────────────
   const emptyGroup = () => ({ logic: 'and', items: [] });
@@ -172,22 +192,24 @@
     host = el;
     try { zoom = Number(localStorage.getItem(ZOOM_KEY)) || 1; } catch (e) { zoom = 1; }
 
-    addSelect = h('select', { class: 'add-select', 'aria-label': '단계 추가' },
-      h('option', { value: '' }, '+ 단계 추가'),
-      Object.entries(E.NODE_TYPES).map(([k, t]) => h('option', { value: k }, t)));
-    addSelect.addEventListener('change', () => { if (addSelect.value) addNode(addSelect.value); addSelect.value = ''; });
+    mountPalette();
     zoomLabel = h('span', { class: 'zoom-label' });
+    const tool = (ico, tip, onclick) => h('button', { class: 'icon-btn', type: 'button', 'aria-label': tip.split('|')[0], 'data-tip': tip, onclick }, icon(ico));
 
-    const toolbar = h('div', { class: 'canvas-toolbar' },
-      addSelect,
-      h('button', { class: 'btn', type: 'button', title: '단계 추가·삭제·연결·이동·저장을 한 번씩 되돌립니다 (Ctrl+Z)', onclick: () => root.App.undo() }, '↶ 되돌리기'),
-      h('button', { class: 'btn', type: 'button', onclick: autoLayout }, '자동 정렬'),
-      h('div', { class: 'zoom-group' },
-        h('button', { class: 'btn-round', type: 'button', title: '축소', 'aria-label': '축소', onclick: () => setZoom(zoom - 0.1) }, '−'),
-        zoomLabel,
-        h('button', { class: 'btn-round', type: 'button', title: '확대', 'aria-label': '확대', onclick: () => setZoom(zoom + 0.1) }, '+'),
-        h('button', { class: 'btn btn-small', type: 'button', onclick: fitWidth }, '폭 맞춤')),
-      h('span', { class: 'toolbar-hint' }, '도형 가장자리 아무 곳에서나 끌어 다른 도형의 원하는 자리에 놓으면 연결 · 화살표를 끌면 붙는 자리를 옮깁니다'));
+    // 떠 있는 도구: 왼쪽 위 = 단계 추가·되돌리기·자동 정렬·처음 안내 / 아래 가운데 = 확대·축소·폭 맞춤
+    const toolbar = h('div', { class: 'float-tool float-tl' },
+      tool('i-plus', '단계 추가|왼쪽 단계 팔레트를 엽니다', () => { root.App.sideTab('palette', true); const q = document.getElementById('paletteSearch'); if (q) q.focus(); }),
+      tool('i-undo', '되돌리기 (Ctrl+Z)|단계 추가·삭제·연결·이동·저장을 한 번씩 되돌립니다', () => root.App.undo()),
+      tool('i-layout', '자동 정렬|흐름 순서대로 도형을 다시 놓습니다', autoLayout),
+      h('span', { class: 'tool-sep' }),
+      tool('i-help', '처음 안내 다시 보기', () => root.Fx.startTour()));
+    const zoombar = h('div', { class: 'float-tool float-bc' },
+      tool('i-minus', '축소', () => setZoom(zoom - 0.1)),
+      zoomLabel,
+      tool('i-plus', '확대', () => setZoom(zoom + 0.1)),
+      h('span', { class: 'tool-sep' }),
+      tool('i-fit', '폭 맞춤|도형 전체가 가로로 들어오게 맞춥니다', fitWidth));
+    const hint = h('div', { class: 'canvas-hint' }, '도형 가장자리를 끌어 다른 도형에 놓으면 연결 · 화살표를 끌면 붙는 자리를 옮깁니다');
 
     svg = document.createElementNS(SVGNS, 'svg');
     svg.classList.add('edges');
@@ -202,7 +224,7 @@
     });
 
     drawer = h('div', { class: 'drawer' });
-    host.append(toolbar, scrollEl, drawer);
+    host.append(scrollEl, toolbar, zoombar, hint, drawer);
     root.Panel.mount(drawer, { onClose: () => select(null) });
 
     document.addEventListener('keydown', onKey);
@@ -210,9 +232,34 @@
     render();
   }
 
+  // ── 단계 팔레트(왼쪽 패널) ──────────────────────────────────────────────
+  function mountPalette() {
+    const box = document.getElementById('palette');
+    if (!box) return;
+    const G = (root.Guide && root.Guide.GUIDE) || {};
+    for (const [title, types] of PALETTE) {
+      const tiles = h('div', { class: 'tiles' }, types.map(t => h('button', {
+        class: 'tile', type: 'button', 'data-type': t,
+        'data-tip': `${E.NODE_TYPES[t]}|${(G[t] && G[t].summary) || ''}`,
+        onclick: () => root.App.showTab('process', () => addNode(t)),
+      }, chip(t), h('span', {}, E.NODE_TYPES[t]))));
+      const group = h('div', { class: 'tile-group' });
+      const head = h('button', { class: 'group-head', type: 'button', 'aria-expanded': 'true',
+        onclick: () => { const closed = group.classList.toggle('closed'); head.setAttribute('aria-expanded', !closed); } }, title, icon('i-chev'));
+      group.append(head, tiles);
+      box.appendChild(group);
+    }
+    const q = document.getElementById('paletteSearch');
+    if (q) q.addEventListener('input', () => {
+      const v = q.value.trim();
+      box.querySelectorAll('.tile').forEach(t => { t.hidden = !!v && !t.textContent.includes(v); });
+    });
+  }
+
   function onChange(reason) {
     if (reason === 'saved' || reason === 'exported' || reason === 'canvas-move') return;
-    if (['load', 'new', 'example', 'import'].includes(reason)) { selectedNode = null; selectedEdge = null; root.Panel.show(null); }
+    pendingReason = reason;
+    if (['load', 'new', 'example', 'import'].includes(reason)) { selectedNode = null; selectedEdge = null; root.Panel.show(null); lastVals = null; }
     if (selectedNode && !S.strategy.nodes.some(n => n.id === selectedNode)) { selectedNode = null; root.Panel.show(null); }
     render();
   }
@@ -240,18 +287,50 @@
 
     for (const el of [...stage.querySelectorAll('.node, .edge-del, .node-empty, .path-menu')]) el.remove();
     if (!s.nodes.length) {
-      stage.appendChild(h('div', { class: 'node-empty' }, '위 "+ 단계 추가"로 첫 단계를 만드세요. 왼쪽 메뉴의 "예시 전략 열기"로 완성된 예를 볼 수 있습니다.'));
+      stage.appendChild(h('div', { class: 'node-empty' }, '왼쪽 단계 팔레트에서 유형을 눌러 첫 단계를 만드세요. 왼쪽 패널 "전략 파일"의 "예시 전략 열기"로 완성된 예를 볼 수 있습니다.'));
     }
     for (const n of s.nodes) stage.appendChild(nodeEl(n));
     drawEdges();
+    playEffects();
+  }
+
+  // ── 움직임: 값이 바뀐 도형 반짝임 · 계산 흐름 빛 · 컷오프 흔들림 · 새 도형 등장 ──
+  // 테스트 입력값·설정 저장처럼 계산이 바뀐 경우에만(처음 그릴 때·전략을 새로 열 때는 조용히)
+  function playEffects() {
+    const s = S.strategy, reason = pendingReason;
+    pendingReason = null;
+    const vals = new Map(s.nodes.map(n => [n.id, stage.querySelector(`.node[data-id="${n.id}"] .node-value`).textContent]));
+    const hits = new Set(s.nodes.filter(n => n.type === 'cutoff' && (result.steps[n.id] || {}).triggered).map(n => n.id));
+    const prev = lastVals, prevHits = lastHit;
+    lastVals = vals; lastHit = hits;
+    if (born) { root.Fx.replay(stage.querySelector(`.node[data-id="${born}"]`), 'born'); born = null; }
+    if (!prev || root.Fx.REDUCED || !['test-input', 'node-save', 'update', 'undo', 'view', 'canvas-edge'].includes(reason)) return;
+    const { order } = E.order(s);
+    const rank = new Map(order.map((id, i) => [id, i]));
+    const STEP = 90;
+    for (const n of s.nodes) {
+      if (prev.has(n.id) && prev.get(n.id) !== vals.get(n.id)) root.Fx.replay(stage.querySelector(`.node[data-id="${n.id}"]`), 'ping', (rank.get(n.id) || 0) * STEP);
+      if (hits.has(n.id) && !prevHits.has(n.id)) root.Fx.replay(stage.querySelector(`.node[data-id="${n.id}"]`), 'hit', (rank.get(n.id) || 0) * STEP);
+    }
+    // 지나간 화살표 위로 짧은 빛이 출발 단계 순서대로 훑고 지나간다
+    for (const path of svg.querySelectorAll('path.edge.on')) {
+      const len = path.getTotalLength();
+      const glow = document.createElementNS(SVGNS, 'path');
+      glow.setAttribute('d', path.getAttribute('d'));
+      glow.setAttribute('class', 'edge-flow');
+      glow.style.strokeDasharray = `14 ${len + 20}`;
+      glow.style.setProperty('--len', `${len + 14}`);
+      glow.style.animationDelay = `${(rank.get(path.dataset.from) || 0) * STEP}ms`;
+      glow.addEventListener('animationend', () => glow.remove());
+      svg.appendChild(glow);
+    }
   }
 
   // ── 유형별 도형 모양 ───────────────────────────────────────────────────
   // 윤곽선은 SVG로 그린다(clip-path로 자르면 테두리가 잘리기 때문). 상태(선택·최종·오류 등)는 CSS가 윤곽선 색으로 표시한다
   //   기초한도 = 이중 테두리 / 사칙연산 = 둥근 사각 / 고급 수식 = 점선 / 표 조회·누진 = 왼쪽 표 띠
   //   최소·최대 = 아래가 좁은 깔때기 / 조건·분기 = 양옆이 뾰족한 육각형 / 컷오프 = 모서리 잘린 팔각형
-  const SYMBOL = { pva: 'PV', arith: '±', formula: 'fx', lookup: '▦', progressive: '▤', minmax: '↓', cond: '◇', branch: '◇', cutoff: '⊘' };
-  const SLANT = 18, TIP = 16, CUT = 14, R = 14;
+  const SLANT = 18, TIP = 16, CUT = 14, R = 14, DIV_Y = 42;
 
   function roundRect(x, y, w, hh, r) {
     return `M${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + hh - r} Q${x + w},${y + hh} ${x + w - r},${y + hh} H${x + r} Q${x},${y + hh} ${x},${y + hh - r} V${y + r} Q${x},${y} ${x + r},${y} Z`;
@@ -276,6 +355,9 @@
         break;
       default: paths.push([roundRect(a, a, w, hh, R), n.type === 'formula' ? 'sh sh-dash' : 'sh']);
     }
+    // 머리줄 아래 구분선 — 모양마다 윤곽선 안쪽에 들어오게 양 끝을 맞춘다
+    const div = { cond: [TIP, W - TIP], branch: [TIP, W - TIP], cutoff: [6, W - 6], minmax: [10, W - 14], lookup: [27, W - 12], progressive: [27, W - 12], pva: [8, W - 8] }[n.type] || [10, W - 10];
+    paths.push([`M${div[0]},${DIV_Y} H${div[1]}`, 'sh-div']);
     const svgEl = document.createElementNS(SVGNS, 'svg');
     svgEl.setAttribute('class', 'node-shape');
     svgEl.setAttribute('width', W);
@@ -300,13 +382,14 @@
       (st.triggered || st.chosen) ? 'marked' : ''].join(' ');
     const el = h('div', { class: cls, 'data-id': n.id, style: `left:${n.x}px;top:${n.y}px;width:${W}px;height:${H}px`, title: D.describe(n) },
       h('div', { class: 'node-head' },
-        h('span', { class: `type-chip type-${n.type}` },
-          h('span', { class: 'type-sym' }, n.type === 'minmax' && n.config.mode === 'max' ? '↑' : (SYMBOL[n.type] || '')),
-          E.NODE_TYPES[n.type] || n.type,
-          n.type === 'formula' && n.config.lang ? ` · ${E.LANGS[n.config.lang]}` : ''),
+        chip(n.type),
+        h('span', { class: 'node-name' }, n.name),
         isFinal ? h('span', { class: 'final-chip' }, '최종') : null),
-      h('div', { class: 'node-name' }, n.name),
-      h('div', { class: 'node-value' }, st.error ? h('span', { class: 'err' }, '오류') : D.stepValueText(n, st)));
+      h('div', { class: 'node-body' },
+        h('span', { class: 'node-type' },
+          n.type === 'minmax' ? (n.config.mode === 'max' ? '최대' : '최소') : (E.NODE_TYPES[n.type] || n.type),
+          n.type === 'formula' && n.config.lang ? ` · ${E.LANGS[n.config.lang]}` : ''),
+        h('span', { class: 'node-value' }, st.error ? h('span', { class: 'err' }, '오류') : D.stepValueText(n, st))));
     el.prepend(shapeSvg(n));
     // 아래 점은 분기의 경로 이름표만 둔다 — 다른 도형은 가장자리에서 끌어 시작한다
     if (n.type === 'branch') ports(n).forEach((label) => {
@@ -350,6 +433,7 @@
       path.setAttribute('d', d);
       path.setAttribute('class', `edge${taken ? ' on' : ''}${key === selectedEdge ? ' sel' : ''}`);
       path.setAttribute('marker-end', taken ? 'url(#arrow-on)' : 'url(#arrow)');
+      path.dataset.from = a.id;
       const hit = document.createElementNS(SVGNS, 'path');
       hit.setAttribute('d', d);
       hit.setAttribute('class', 'edge-hit');
@@ -670,6 +754,7 @@
         st.edges.push(label === null ? { from: sel.id, to: id } : { from: sel.id, to: id, label });
       }
     }, 'canvas-add');
+    born = id;
     select(id);
   }
 
@@ -688,5 +773,5 @@
     setZoom(Math.floor((scrollEl.clientWidth / w) * 10) / 10);
   }
 
-  root.Canvas = { mount, select, defaultConfig, ports, get selected() { return selectedNode; } };
+  root.Canvas = { mount, select, addNode, defaultConfig, ports, get selected() { return selectedNode; } };
 })(typeof self !== 'undefined' ? self : this);

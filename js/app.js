@@ -1,5 +1,5 @@
 /* ============================================================================
-   화면 뼈대 — 상단 막대, 왼쪽 메뉴, 탭, 오른쪽 단계별 계산결과
+   화면 뼈대 — 상단 막대, 왼쪽 패널(단계 팔레트·전략 파일), 탭, 오른쪽 단계별 계산결과, 하단 상태 막대
    프로세스 탭은 canvas.js(도형 캔버스) + panel.js(설정 패널)가 맡는다.
    ========================================================================== */
 (function (root) {
@@ -8,6 +8,7 @@
   const $ = (sel) => document.querySelector(sel);
 
   const TAB_KEY = 'limitsim.tab';
+  const PANEL_KEY = { menu: 'limitsim.panel.menu', results: 'limitsim.panel.results' };
 
   // ── 계산 ────────────────────────────────────────────────────────────────
   function compute() {
@@ -20,11 +21,15 @@
     const title = $('#strategyTitle');
     title.textContent = S.strategy.meta.name;
     title.title = `${S.strategy.meta.name} — 눌러서 전략 목록 열기. 이름은 저장할 때 정합니다`;
-    // 저장하지 않은 변경이 있을 때만 점 하나. 브라우저 임시저장이 막혔으면 점에 알린다
+    // 상태 막대: 저장하지 않은 변경이 있을 때만 알린다. 브라우저 임시저장이 막혔으면 그것도 알린다
+    const dirty = S.hasUnexported() || S.state.saveFailed;
     const dot = $('#dirtyDot');
-    dot.hidden = !S.hasUnexported() && !S.state.saveFailed;
+    dot.hidden = !dirty;
+    dot.textContent = S.state.saveFailed ? '브라우저 임시저장 막힘' : '저장하지 않은 변경 있음';
     dot.title = S.state.saveFailed ? '브라우저 임시저장이 막혀 있습니다(브라우저 설정) — 서버나 파일로 저장하세요' : '저장하지 않은 변경이 있습니다 — 서버에 저장하거나 로컬 PC에 저장하세요';
     if (root.Cloud) root.Cloud.renderBadge($('#cloudState'));
+    // 점: 서버에 저장되어 있고 바뀐 것이 없으면 초록, 아니면 주황
+    $('#led').classList.toggle('ok', !!S.state.cloud && !dirty);
   }
 
   // ── 새로 만들기·열기 전 확인 ─────────────────────────────────────────────
@@ -81,12 +86,16 @@
     return n ? ` — 옛 형식 단계 ${n}개를 바꿨습니다(같은 결과가 나오게 — 부채 집계 → 부채표 합계 바로 고르기, 현가계수 → 사칙연산, 기초한도 → 줄 단위 식 등)` : '';
   }
 
+  // 알림: 상태 막대 위 가운데에 캐릭터 얼굴과 함께 4초 띄운다(성공 = 기쁨, 실패 = 걱정)
   let flashTimer;
   function flash(msg, kind) {
     const el = $('#flash');
-    el.textContent = msg;
+    const mood = kind === 'ok' ? 'happy' : kind === 'danger' ? 'worry' : '';
+    clear(el).append(root.Fx.face(mood), h('span', {}, msg));
     el.className = `flash flash-${kind || 'info'}`;
     el.hidden = false;
+    root.Fx.replay(el, 'flash-in');
+    if (kind === 'ok') root.Fx.mood('happy', 1400);
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => { el.hidden = true; }, 4000);
   }
@@ -191,20 +200,42 @@
     }
   }
 
+  // 최종한도가 바뀌면 숫자를 굴리고(카운트업), 상태가 바뀌면 배지가 한 번 튀고 캐릭터가 반응한다
+  let lastFinal = null, lastStatus = null;
   function renderResults() {
     const r = compute();
     const s = S.strategy;
     const card = clear($('#finalCard'));
     const fid = r.finalNodeId && s.nodes.find(n => n.id === r.finalNodeId);
+    const fmt = (v) => E.fmtValue(v, fid ? fid.format : 'money');
     const statusBadge = r.status === 'ok' ? ['정상 산출', 'ok'] : r.status === 'reject' ? ['대출 거절', 'danger'] : ['확인 필요', 'warn'];
+    const badge = h('span', { class: `badge badge-${statusBadge[1]}` }, statusBadge[0]);
+    const value = h('div', { class: 'final-value' }, r.final === null ? '—' : fmt(r.final));
     card.append(
-      h('div', { class: 'final-label' }, fid ? fid.name : '최종한도', ' ', h('span', { class: `badge badge-${statusBadge[1]}` }, statusBadge[0])),
-      h('div', { class: 'final-value' }, r.final === null ? '—' : E.fmtValue(r.final, fid ? fid.format : 'money')),
+      h('div', { class: 'final-label' }, fid ? fid.name : '최종한도', ' ', badge),
+      value,
       h('div', { class: 'final-det' }, h('span', { class: 'muted' }, r.status === 'reject' ? '거절 사유 ' : '결정요인 '), r.determinant || '—'));
+    if (lastStatus !== null) {
+      if (r.final !== null && lastFinal !== null && r.final !== lastFinal) root.Fx.countTo(value, lastFinal, r.final, fmt);
+      if (r.status !== lastStatus) {
+        root.Fx.replay(badge, 'pop');
+        root.Fx.mood(r.status === 'ok' ? 'happy' : r.status === 'reject' ? 'worry' : 'think', r.status === 'ok' ? 1400 : 0);
+      } else if (r.status === 'ok' && r.final !== lastFinal) root.Fx.mood('happy', 1400);
+    }
+    lastFinal = r.final; lastStatus = r.status;
+    root.Fx.say(r.status === 'ok' ? `한도가 나왔어요! 결정요인은 ${r.determinant || '—'}이에요`
+      : r.status === 'reject' ? `대출 거절이에요 — ${r.determinant || '사유를 확인하세요'}`
+      : '확인이 필요한 단계가 있어요. 빨간 도형을 눌러 보세요');
 
     const issues = clear($('#issues'));
     const all = [...new Set([...E.validate(s), ...r.errors])];
     if (all.length) issues.appendChild(h('ul', { class: 'issue-list' }, all.map(m => h('li', {}, m))));
+
+    // 상태 막대: 단계 수 · 오류 수 · 최종한도
+    $('#stCount').textContent = s.nodes.length;
+    $('#stErr').textContent = all.length;
+    $('#stErrWrap').classList.toggle('err', all.length > 0);
+    $('#stFinal').textContent = r.status === 'reject' ? '대출 거절' : r.final === null ? '—' : fmt(r.final);
 
     const list = clear($('#stepList'));
     const { order } = E.order(s);
@@ -224,13 +255,22 @@
     if (!order.length) list.appendChild(h('li', { class: 'muted small' }, '계산 단계가 없습니다.'));
   }
 
-  // ── 좌우 패널 여닫기 (기본 닫힘 — 열 때마다 새로 정하므로 상태를 저장하지 않는다) ──
-  function bindToggle(btnSel, cls) {
-    const btn = $(btnSel);
-    btn.addEventListener('click', () => {
-      const open = $('#layout').classList.toggle(cls);
-      btn.setAttribute('aria-expanded', open);
-    });
+  // ── 좌우 패널 여닫기 — 처음엔 화면이 넓으면(1280px 이상) 열고, 사용자가 여닫은 상태는 기억한다 ──
+  // 바뀌었으면 true(첫 방문 안내가 패널이 열리기를 기다린다)
+  function setPanel(side, open, remember) {
+    const cls = `${side}-open`, layout = $('#layout');
+    if (remember) { try { localStorage.setItem(PANEL_KEY[side], open ? '1' : '0'); } catch (e) { /* 저장 못 해도 동작에는 지장 없음 */ } }
+    if (layout.classList.contains(cls) === open) return false;
+    layout.classList.toggle(cls, open);
+    $(side === 'menu' ? '#toggleMenu' : '#toggleResults').setAttribute('aria-expanded', open);
+    return true;
+  }
+  function bindToggle(side) {
+    let saved = null;
+    try { saved = localStorage.getItem(PANEL_KEY[side]); } catch (e) { /* 기본값 */ }
+    setPanel(side, saved === null ? root.innerWidth >= 1280 : saved === '1');
+    $(side === 'menu' ? '#toggleMenu' : '#toggleResults').addEventListener('click', () =>
+      setPanel(side, !$('#layout').classList.contains(`${side}-open`), true));
   }
 
   // ── 되돌리기: 설정 패널에서 편집 중이면 그 편집부터, 아니면 전략의 마지막 수정을 취소한다 ──
@@ -251,8 +291,10 @@
   // ── 시작 ────────────────────────────────────────────────────────────────
   function init() {
     document.addEventListener('keydown', onUndoKey);
-    bindToggle('#toggleMenu', 'menu-open');
-    bindToggle('#toggleResults', 'results-open');
+    bindToggle('menu');
+    bindToggle('results');
+    // 왼쪽 패널 아이콘 탭: 단계 팔레트 / 전략 파일
+    document.querySelectorAll('.side-tab').forEach(b => b.addEventListener('click', () => sideTab(b.dataset.side)));
     document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
     $('#menuNew').addEventListener('click', () => guard(() => { S.newStrategy(); flash('새 전략을 만들었습니다', 'info'); }, '새로 만들기'));
     // 게시본에는 예시 전략 파일이 없다(예시는 서버의 전략으로 공유) — 그때는 메뉴를 숨긴다
@@ -261,6 +303,8 @@
     $('#menuExample').addEventListener('click', () => guard(() => { S.openExample(0); flash('예시 전략 사본을 열었습니다', 'info'); }, '예시 전략 열기'));
     $('#menuImport').addEventListener('click', () => guard(pickFile, '파일 가져오기'));
     $('#menuExport').addEventListener('click', () => exportDialog());
+    $('#topExport').addEventListener('click', () => exportDialog());
+    $('#topSave').addEventListener('click', () => { if (root.Cloud.user) root.Cloud.save(); else flash('로그인한 뒤 서버에 저장할 수 있습니다', 'info'); });
 
     const draft = S.restoreDraft();
     if (draft) S.load(draft.strategy, 'load', draft.exportedAt, draft.cloud);
@@ -288,6 +332,18 @@
     showTab(document.getElementById(`tab-${tab}`) ? tab : 'process');
   }
 
-  root.App = { flash, showTab, undo, guard };
+  // 왼쪽 패널의 탭을 보여 준다. open이면 패널도 연다(캔버스의 "단계 추가" 버튼이 팔레트를 연다)
+  function sideTab(name, open) {
+    document.querySelectorAll('.side-tab').forEach(b => {
+      const on = b.dataset.side === name;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on);
+    });
+    $('#sidePalette').hidden = name !== 'palette';
+    $('#sideFile').hidden = name !== 'file';
+    if (open) setPanel('menu', true, true);
+  }
+
+  root.App = { flash, showTab, undo, guard, setPanel, sideTab };
   document.addEventListener('DOMContentLoaded', init);
 })(typeof self !== 'undefined' ? self : this);
