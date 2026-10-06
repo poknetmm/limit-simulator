@@ -562,6 +562,7 @@ svg.edges{position:absolute;left:0;top:0;overflow:visible}
 .pva-line-tools{display:inline-flex;gap:var(--sp-1)}
 .pva-target{font-weight:600}
 .pva-params{display:flex;flex-wrap:wrap;gap:var(--sp-3) var(--sp-6)}
+.pva-rate{display:grid;gap:var(--sp-3)}
 .token-own{background:var(--surface-2)}
 .confirm-body{display:grid;gap:var(--sp-4)}
 .confirm-body p{margin:0}

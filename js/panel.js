@@ -14,6 +14,7 @@
   let hist = [], lastPush = 0;            // 사본 편집 되돌리기
   let resultHook = null;                  // 유형별 편집기가 미리보기 결과를 받아 그리는 곳(기초한도 계산 과정)
   let pvaAt = 0, pvaPicked = null;        // 기초한도: 조각을 넣을 줄, 고른 조각
+  let ratePicked = null;                  // 기초한도: 현가계수 금리 식에서 고른 조각
 
   const FORMATS = [['money', '금액(원)'], ['percent', '비율(%)'], ['number', '숫자']];
   const OP_LABEL = { '>=': '≥ 이상', '>': '> 초과', '<=': '≤ 이하', '<': '< 미만', '=': '= 같음', '<>': '≠ 다름' };
@@ -42,6 +43,7 @@
     nodeId = id;
     pendingDelete = false;
     pvaAt = Infinity; pvaPicked = null;   // 기초한도는 처음에 마지막 줄을 고른다
+    ratePicked = null;
     if (id) resync(); else { draft = original = null; hist = []; }
     render();
   }
@@ -430,18 +432,23 @@
       if (pvaAt >= lines.length) pvaAt = lines.length - 1;
       const no = (i) => (i < 20 ? String.fromCharCode(0x2460 + i) : `(${i + 1})`);   // ① ② …
 
-      // 수식 그림: 왼쪽 기본형(처음 4줄, 요소 이름) · 오른쪽 지금 식 — 줄을 고치면 오른쪽이 따라 바뀐다
+      // 수식 그림: 왼쪽 기본형(CF × 현가계수, 요소 설명만) · 오른쪽 지금 식 — 줄을 고치면 오른쪽이 따라 바뀐다
       const slotName = Object.fromEntries(E.PVA_SLOTS);
-      const base = E.pvaDefaultLines((k) => ({ t: 'ref', ref: { k: 'slot', id: k } }));
-      const baseName = (r) => (r.k === 'slot' ? slotName[r.id] : r.k === 'line' ? (base.find(l => l.id === r.id) || {}).name : '');
+      const base = [{ id: 'pva', name: '기초 PVA', tokens: [{ t: 'ref', ref: { k: 'slot', id: 'cf' } }, { t: 'op', v: '*' }, { t: 'ref', ref: { k: 'pvf' } }] }];
+      const baseName = (r) => (r.k === 'slot' && r.id === 'cf' ? 'CF' : '');
       const curName = (r) => (r && r.k === 'num' ? E.fmtNum(r.v) : D.refText(r, n).replace(/^\[|\]$/g, ''));
+      // 금리 식(조각이 여러 개면 괄호로 묶는다)
+      const rt = E.rateTokens(c);
+      const rateOf = (f) => { const x = rt.map(f).join(' '); return rt.length > 1 ? `(${x})` : x; };
+      const rateCur = rt.length ? rateOf(t => (t.t === 'ref' ? curName(t.ref) : D.rateTokenText(t, n))) : '(금리 미선택)';
+      const rateText = rt.length ? rateOf(t => D.rateTokenText(t, n)) : '(비어 있음)';
       wrap.appendChild(h('div', { class: 'mx-pair' },
-        pvaMath('기본형', base, slotName.rate, slotName.months, baseName),
-        pvaMath('지금 식', lines, c.rate ? curName(c.rate) : '(금리 미선택)', c.months ? curName(c.months) : '(기간 미선택)', curName)));
+        pvaMath('기본형', base, slotName.rate, slotName.months, baseName, [['CF', '월 현금흐름']]),
+        pvaMath('지금 식', lines, rateCur, c.months ? curName(c.months) : '(기간 미선택)', curName)));
 
       wrap.appendChild(field('공식', h('ol', { class: 'pva-formula' },
         lines.map((l, i) => h('li', { class: i === lines.length - 1 ? 'pva-last' : '' }, h('strong', {}, l.name), ` = ${D.tokensText(l.tokens, n) || '(식 없음)'}`)),
-        h('li', { class: 'pva-pvf' }, h('strong', {}, E.PVF_NAME), ` = [1 − (1 + ${D.refText(c.rate)} ÷ 12)^−${D.refText(c.months)}] ÷ (${D.refText(c.rate)} ÷ 12)`)),
+        h('li', { class: 'pva-pvf' }, h('strong', {}, E.PVF_NAME), ` = [1 − (1 + ${rateText} ÷ 12)^−${D.refText(c.months)}] ÷ (${rateText} ÷ 12)`)),
         '마지막 줄이 기초한도 값입니다. 아래에서 줄을 고치면 공식도 따라 바뀝니다'));
 
       // 줄 편집 — 줄을 누르면 그 줄에 조각을 넣는다
@@ -517,12 +524,65 @@
       drawAdder();
       wrap.appendChild(field('넣기', adderHost, '곱셈·나눗셈이 덧셈·뺄셈보다 먼저 계산됩니다. 계산 순서를 바꾸려면 괄호를 넣으세요'));
 
-      // 현가계수
+      // 현가계수 — 금리는 조각 식(값·전략 파라미터·표 값의 조합), 기간은 값 하나.
+      // 옛 형식(금리 참조 하나)은 처음 고칠 때 조각 배열로 바꾼다(열기만 해서는 바뀌지 않게)
+      const rate = { get tokens() { if (!Array.isArray(c.rate)) c.rate = E.rateTokens(c).slice(); return c.rate; } };
+      const ratePush = (tok) => commit(() => { rate.tokens.push(tok); ratePicked = null; }, true);
+      const rateDel = (j) => commit(() => { rate.tokens.splice(j, 1); ratePicked = null; }, true);
+      const rateRow = h('div', { class: 'token-row' });
+      rt.forEach((t, j) => {
+        const el = h('span', { class: `token token-${t.t}${j === ratePicked ? ' picked' : ''}`, draggable: 'true', tabindex: '0', 'data-i': j, title: '눌러서 고르기 · 끌어서 순서 바꾸기' }, D.rateTokenText(t, n));
+        el.addEventListener('click', () => { ratePicked = ratePicked === j ? null : j; renderBody(); });
+        el.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); el.click(); }
+          if ((ev.key === 'Delete' || ev.key === 'Backspace') && ratePicked === j) { ev.preventDefault(); rateDel(j); }
+        });
+        rateRow.appendChild(el);
+      });
+      if (!rt.length) rateRow.appendChild(h('span', { class: 'muted' }, '아래에서 값·표 값과 연산 기호를 넣으세요. 예) 금리표([ASS등급]) + [가산금리]'));
+      tokenDrag(rateRow, rate);
+      let rateErr = '';
+      try { if (rt.length) E.parseTokens(rt); } catch (e) { rateErr = e.message; }
+      let ratePending = null;
+      const rateOp = (label, tok) => h('button', { class: 'btn-op', type: 'button', onclick: () => ratePush(tok) }, label);
+      const rateDelPicked = btn('고른 조각 삭제', () => { if (ratePicked !== null) rateDel(ratePicked); });
+      rateDelPicked.disabled = ratePicked === null;
+      // 표 값 넣기: 표 + 행(·열) 기준값 → 그 칸의 숫자(INDEX·MATCH). 기준값에 따라 적용 금리가 달라진다
+      const tblHost = h('div', { class: 'token-adder' });
+      let tblRef = null, rowRef = null, colRef = null;
+      const axisHint = (ax) => (ax.mode === 'band' ? '구간표 — 값이 들어가는 구간' : `목록 — 같은 항목 (${ax.keys.join(', ')})`);
+      const drawTbl = () => {
+        clear(tblHost);
+        const tv = tblRef && S.strategy.variables.find(v => v.id === tblRef.id);
+        tblHost.append(h('span', { class: 'muted small' }, '표 값'),
+          tablePicker(tblRef, (r) => { tblRef = r; rowRef = colRef = null; drawTbl(); }));
+        if (tv) tblHost.append(h('span', { class: 'muted small' }, '행 기준값'), refPicker(rowRef, (r) => { rowRef = r; }, { exclude: n.id }));
+        if (tv && tv.cols) tblHost.append(h('span', { class: 'muted small' }, '열 기준값'), refPicker(colRef, (r) => { colRef = r; }, { exclude: n.id }));
+        tblHost.append(btn('표 값 넣기', () => {
+          if (!tv) { root.App.flash('금리를 가져올 표를 고르세요', 'danger'); return; }
+          if (!rowRef || (tv.cols && !colRef)) { root.App.flash(`${tv.cols ? '행·열' : '행'} 기준값을 고르세요`, 'danger'); return; }
+          ratePush({ t: 'ref', ref: { k: 'tbl', table: tblRef, row: rowRef, col: tv.cols ? colRef : null } });
+        }, 'btn-accent'));
+        if (tv) tblHost.append(h('span', { class: 'hint' }, `행: ${axisHint(tv.rows)}${tv.cols ? ` · 열: ${axisHint(tv.cols)}` : ''}`));
+      };
+      drawTbl();
       const pvfVal = h('span', { class: 'muted' });
-      wrap.appendChild(field(E.PVF_NAME, h('div', { class: 'inline' },
-        h('span', { class: 'muted small' }, '금리(연)'), refPicker(c.rate, (r) => commit(() => { c.rate = r; }, true), { exclude: n.id, numFormat: 'percent' }),
-        h('span', { class: 'muted small' }, '기간(개월)'), refPicker(c.months, (r) => commit(() => { c.months = r; }, true), { exclude: n.id }),
-        pvfVal), '현가계수 = [1 − (1 + 금리 ÷ 12)^−기간] ÷ (금리 ÷ 12). 줄에서 [현가계수] 조각으로 씁니다'));
+      wrap.appendChild(field(E.PVF_NAME, h('div', { class: 'pva-rate' },
+        h('div', { class: 'inline' }, h('span', { class: 'muted small' }, '금리(연) ='), rateRow),
+        rateErr ? h('div', { class: 'err' }, `금리: ${rateErr}`) : null,
+        h('div', { class: 'token-adder' },
+          refPicker(null, (r) => { ratePending = r; }, { exclude: n.id, numFormat: 'percent' }),
+          btn('값 넣기', () => { if (!ratePending) return; ratePush(ratePending.k === 'num' ? { t: 'num', v: ratePending.v } : { t: 'ref', ref: ratePending }); }, 'btn-accent'),
+          h('span', { class: 'op-group' },
+            rateOp('+', { t: 'op', v: '+' }), rateOp('−', { t: 'op', v: '-' }), rateOp('×', { t: 'op', v: '*' }), rateOp('÷', { t: 'op', v: '/' }),
+            rateOp('(', { t: 'lp' }), rateOp(')', { t: 'rp' })),
+          rt.length ? rateDelPicked : null,
+          rt.length ? btn('마지막 조각 지우기', () => commit(() => { rate.tokens.pop(); ratePicked = null; }, true)) : null),
+        tblHost,
+        h('div', { class: 'inline' },
+          h('span', { class: 'muted small' }, '기간(개월)'), refPicker(c.months, (r) => commit(() => { c.months = r; }, true), { exclude: n.id }),
+          pvfVal)),
+        '현가계수 = [1 − (1 + 금리 ÷ 12)^−기간] ÷ (금리 ÷ 12). 금리는 값·전략 파라미터·표 값을 조합합니다 — 표 값은 행·열 기준값(예: ASS등급)에 맞는 칸의 숫자를 가져옵니다. 줄에서 [현가계수] 조각으로 씁니다'));
 
       // 이 기초한도가 쓰는 전략 파라미터 — 값을 여기서 고치면 저장할 때 변수·표 탭의 값도 바뀐다
       const used = new Set();
@@ -551,7 +611,7 @@
       resultHook = (st) => {
         clear(trace);
         clear(pvfVal);
-        if (st.factor !== undefined) pvfVal.textContent = `→ ${E.fmtNum(st.factor, 4)}`;
+        if (st.factor !== undefined) pvfVal.textContent = `→ 금리 ${E.fmtValue(st.rate, 'percent')} · ${E.PVF_NAME} ${E.fmtNum(st.factor, 4)}`;
         if (st.skipped || !st.active) { trace.appendChild(h('span', { class: 'muted' }, '지금 테스트 입력값으로는 이 단계를 계산하지 않습니다')); return; }
         for (const [i, x] of (st.lines || []).entries()) {
           const l = lines.find(y => y.id === x.id) || { tokens: [] };
@@ -759,7 +819,8 @@
   }
 
   // 수식 카드: 마지막 줄을 크게, 위 줄들은 가까운 것부터 정의로, 현가계수를 쓰면 r·n 뜻을 붙인다
-  function pvaMath(title, lines, rateName, monthsName, nameOf) {
+  // defs: 그 밖의 요소 설명 [[기호, 뜻], …] (기본형의 CF)
+  function pvaMath(title, lines, rateName, monthsName, nameOf, defs) {
     const uses = (l) => (l.tokens || []).some(t => t.t === 'ref' && t.ref && t.ref.k === 'pvf');
     const eq = (l, cls) => {
       let body;
@@ -776,6 +837,7 @@
       last ? eq(last, 'mx-main') : h('div', { class: 'muted' }, '(줄 없음)'),
       h('div', { class: 'mx-defs' },
         lines.slice(0, -1).reverse().map(l => eq(l, 'mx-def')),
+        (defs || []).map(([sym, text]) => h('div', { class: 'mx-def' }, h('i', { class: 'mx-var' }, sym), ` = ${text}`)),
         lines.some(uses) ? h('div', { class: 'mx-def' }, h('i', { class: 'mx-var' }, 'r'), ` = ${rateName} ÷ 12,  `, h('i', { class: 'mx-var' }, 'n'), ` = ${monthsName}`) : null));
   }
 

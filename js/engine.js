@@ -44,6 +44,8 @@
   // 기초한도(PVA) — 줄 단위 식. 줄마다 이름 + 사칙연산 조각(값·앞 줄·현가계수·연산 기호), 마지막 줄 = 기초한도.
   // 조각의 참조에는 {k:'line', id}(이 단계의 앞 줄)와 {k:'pvf'}(현가계수)가 더 있다.
   //   현가계수 = [1 − (1 + 금리/12)^−기간] ÷ (금리/12) — 금리·기간은 단계 설정(config.rate, config.months)
+  //   금리는 조각 식(config.rate = 조각 배열)으로 값·전략 파라미터·표 값을 조합한다. 옛 형식(참조 하나)도 그대로 읽는다
+  //   표 값 조각: {k:'tbl', table:{k:'var', id}, row:ref, col:ref|null} — 행·열 기준값으로 표의 숫자를 찾는다(INDEX·MATCH)
   // 처음 줄(기본형): ① 불량률 조정소득 → ② 월가처분소득 → ③ 실질월가처분소득 → ④ 기초 PVA.
   // 기본형 줄 id(adjinc·free·realfree)는 옛 중간값 참조와 같게 둔다
   const PVF_NAME = '현가계수';
@@ -62,6 +64,7 @@
     ];
   }
   const refToken = (ref) => (ref && ref.k === 'num' ? { t: 'num', v: ref.v } : { t: 'ref', ref: ref || null });
+  const rateTokens = (c) => (Array.isArray(c.rate) ? c.rate : c.rate ? [refToken(c.rate)] : []);
 
   // 부채표 합계 — 부채표(업권 × 대출구분, 기간·금리·잔액)의 행별 원리금균등 월상환액과 합계.
   // 다른 단계에서 "보유부채 › 고금리채무"처럼 바로 고른다. 고금리 기준은 부채표 설정(v.hiRate)
@@ -662,6 +665,11 @@
           try { asts.set(`${n.id}#${l.id}`, parseTokens(l.tokens || [])); }
           catch (e) { if (!(e instanceof CalcError)) throw e; asts.set(`${n.id}#${l.id}`, new CalcError(`[${l.name}] 줄: ${e.message}`)); }
         }
+        const rt = rateTokens(n.config || {});
+        if (rt.length) {
+          try { asts.set(`${n.id}#rate`, parseTokens(rt)); }
+          catch (e) { if (!(e instanceof CalcError)) throw e; asts.set(`${n.id}#rate`, new CalcError(`${PVF_NAME} 금리: ${e.message}`)); }
+        }
         continue;
       }
       if (n.type !== 'arith' && n.type !== 'formula') continue;
@@ -816,8 +824,22 @@
           if (!lines.length) throw new CalcError('줄이 없습니다 — [+ 줄 추가]로 식을 만드세요');
           // 현가계수: 금리·기간을 둘 다 고르면 계산한다. 줄에서 쓰는데 비어 있으면 오류
           let factor;
-          if (c.rate && c.months) {
-            const r = num(resolve(c.rate), '현가계수 금리') / 12, m = num(resolve(c.months), '현가계수 기간');
+          if (rateTokens(c).length && c.months) {
+            // 금리 조각: 값·전략 파라미터·앞 단계 + 표 값(행·열 기준값으로 표의 숫자를 찾는다)
+            const rateRef = (ref) => {
+              if (!ref || ref.k !== 'tbl') return resolve(ref);
+              const tv = ref.table && idx.vars.get(ref.table.id);
+              if (!tv || tv.type !== 'table') throw new CalcError('금리를 가져올 표를 고르세요');
+              return lookupTable(tv, resolve(ref.row), tv.cols ? resolve(ref.col) : null);
+            };
+            let rate;
+            try { rate = num(evalAst(astOf(`${node.id}#rate`), rateRef), '현가계수 금리'); }
+            catch (e) {
+              if (!(e instanceof CalcError) || e.message.startsWith(`${PVF_NAME} 금리`)) throw e;
+              throw new CalcError(`${PVF_NAME} 금리: ${e.message}`);
+            }
+            step.rate = rate;
+            const r = rate / 12, m = num(resolve(c.months), '현가계수 기간');
             factor = r === 0 ? m : (1 - Math.pow(1 + r, -m)) / r;
           }
           const vals = {};
@@ -966,6 +988,12 @@
           else if (/[\[\]›]/.test(l.name)) issues.push(`[${n.name}]의 줄 이름에 [ ] › 를 쓸 수 없습니다: ${l.name}`);
           ln.add(l.name);
           try { parseTokens(l.tokens || []); } catch (e) { issues.push(`[${n.name}] [${l.name}] 줄: ${e.message}`); }
+        }
+        const rt = rateTokens(n.config);
+        try { if (rt.length) parseTokens(rt); } catch (e) { issues.push(`[${n.name}] ${PVF_NAME} 금리: ${e.message}`); }
+        for (const t of rt) {
+          const tv = t.ref && t.ref.k === 'tbl' && t.ref.table && idx.vars.get(t.ref.table.id);
+          if (t.ref && t.ref.k === 'tbl' && (!tv || tv.type !== 'table')) issues.push(`[${n.name}] ${PVF_NAME} 금리의 표를 찾을 수 없습니다`);
         }
       }
       if (n.type === 'formula') {
@@ -1191,7 +1219,7 @@
 
   return {
     SCHEMA, NODE_TYPES, VAR_TYPES, CMP_OPS, IN_NAME, PVF_NAME, PVA_SLOTS, DEBT_PARTS, DEBT_MORT, PART_SEP, CalcError,
-    pvaDefaultLines, partsOf, monthlyPayment, debtAggregate, inputColumns, autoMap, parseInputCell, rowInputs,
+    pvaDefaultLines, rateTokens, refToken, partsOf, monthlyPayment, debtAggregate, inputColumns, autoMap, parseInputCell, rowInputs,
     prepare, evaluate, validate, order, index, findReferences, renameInFormulas, finalNodeId, migrate,
     tokenize, parseTokens, evalAst, LANGS, parseFormula, formulaNames, lookupTable, progressiveSum, axisKeyLabel,
     toNum, fmtNum, fmtValue, newId, emptyStrategy,

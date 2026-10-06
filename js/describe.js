@@ -11,6 +11,11 @@
     const s = S.strategy;
     if (ref.k === 'in') return `[${E.IN_NAME}]`;
     if (ref.k === 'pvf') return `[${E.PVF_NAME}]`;
+    // 표 값(현가계수 금리 조각): 표이름(행 기준값, 열 기준값)
+    if (ref.k === 'tbl') {
+      const tv = ref.table && s.variables.find(v => v.id === ref.table.id);
+      return `${tv ? tv.name : '[삭제된 표]'}(${refText(ref.row)}${ref.col ? `, ${refText(ref.col)}` : ''})`;
+    }
     if (ref.k === 'line') {
       const l = node && ((node.config && node.config.lines) || []).find(x => x.id === ref.id);
       return l ? `[${l.name}]` : '[삭제된 줄]';
@@ -36,6 +41,8 @@
   function tokenText(t, node) {
     return t.t === 'ref' ? refText(t.ref, node) : t.t === 'num' ? E.fmtNum(t.v) : t.t === 'lp' ? '(' : t.t === 'rp' ? ')' : (OP_TEXT[t.v] || t.v);
   }
+  // 현가계수 금리 조각: 숫자는 %로 보인다(입력도 %)
+  function rateTokenText(t, node) { return t.t === 'num' ? E.fmtValue(t.v, 'percent') : tokenText(t, node); }
   function tokensText(tokens, node) {
     return (tokens || []).map(t => tokenText(t, node)).join(' ');
   }
@@ -44,7 +51,7 @@
     const c = n.config || {};
     switch (n.type) {
       case 'pva': return [...(c.lines || []).map(l => `${l.name} = ${tokensText(l.tokens, n) || '(식 없음)'}`),
-        `${E.PVF_NAME}: 연 ${refText(c.rate)}, ${refText(c.months)}개월`].join(' / ');
+        `${E.PVF_NAME}: 연 ${E.rateTokens(c).map(t => rateTokenText(t, n)).join(' ') || '(비어 있음)'}, ${refText(c.months)}개월`].join(' / ');
       case 'arith': return tokensText(c.tokens) || '(식 없음)';
       case 'formula': return c.text || '(수식 없음)';
       case 'lookup': return `표 ${refText(c.table)}에서 행 = ${refText(c.row)}${c.col ? `, 열 = ${refText(c.col)}` : ''}`;
@@ -67,5 +74,5 @@
     return E.fmtValue(st.value, n.format);
   }
 
-  root.Describe = { OP_TEXT, refText, groupText, tokenText, tokensText, describe, stepValueText };
+  root.Describe = { OP_TEXT, refText, groupText, tokenText, rateTokenText, tokensText, describe, stepValueText };
 })(typeof self !== 'undefined' ? self : this);
