@@ -212,6 +212,8 @@
     if (resultHook) resultHook(st);
     clear(resultEl);
     if (st.skipped) resultEl.append(h('span', { class: 'muted' }, '앞 단계에서 거절되어 이 단계는 계산하지 않았습니다'));
+    else if (st.cycle) resultEl.append(h('span', { class: 'err' }, (r.errors || [])[0] || st.error));
+    else if (st.stopped) resultEl.append(h('span', { class: 'muted' }, '순서가 고리처럼 돌아가는 단계가 있어 전체 계산을 멈췄습니다(아래 상태 막대의 오류 참고)'));
     else if (!st.active) resultEl.append(h('span', { class: 'muted' }, '지금 테스트 입력값으로는 이 단계를 지나지 않습니다(다른 경로)'));
     else if (st.error) resultEl.append(h('span', { class: 'err' }, `오류: ${st.error}`));
     else {

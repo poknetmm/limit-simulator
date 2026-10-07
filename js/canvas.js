@@ -389,7 +389,7 @@
         h('span', { class: 'node-type' },
           n.type === 'minmax' ? (n.config.mode === 'max' ? '최대' : '최소') : (E.NODE_TYPES[n.type] || n.type),
           n.type === 'formula' && n.config.lang ? ` · ${E.LANGS[n.config.lang]}` : ''),
-        h('span', { class: 'node-value' }, st.error ? h('span', { class: 'err' }, '오류') : D.stepValueText(n, st))));
+        h('span', { class: 'node-value' }, st.error ? h('span', { class: 'err' }, st.cycle ? '순환' : '오류') : D.stepValueText(n, st))));
     el.prepend(shapeSvg(n));
     // 아래 점은 분기의 경로 이름표만 둔다 — 다른 도형은 가장자리에서 끌어 시작한다
     if (n.type === 'branch') ports(n).forEach((label) => {

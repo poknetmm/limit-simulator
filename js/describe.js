@@ -67,6 +67,8 @@
   function stepValueText(n, st) {
     st = st || {};
     if (st.skipped) return '거절로 중단';
+    if (st.cycle) return '순환';
+    if (st.stopped) return '계산 중단';
     if (!st.active) return '경로 아님';
     if (st.error) return '오류';
     if (n.type === 'cutoff' && st.triggered) return n.config.action === 'reject' ? '거절' : '0원';

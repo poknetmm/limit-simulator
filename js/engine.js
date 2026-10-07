@@ -686,6 +686,21 @@
     return { order: result, cycle, deps };
   }
 
+  // 고리의 원인이 표 계산식 칸이면 알려 준다 — 칸 식이 만든 순서는 캔버스에 화살표로 보이지 않는다
+  function cycleTables(idx, cycle) {
+    const inCycle = new Set(cycle), out = [];
+    for (const id of cycle) {
+      const n = idx.nodes.get(id);
+      for (const r of collectRefs(n)) {
+        const tv = r.k === 'var' && idx.vars.get(r.id);
+        if (!tv || tv.type !== 'table') continue;
+        const hit = [...new Set(cellFormulaNames(tv))].filter(x => { const y = idx.byName.get(x); return y && y.k === 'node' && inCycle.has(y.id); });
+        if (hit.length) out.push(`표 [${tv.name}]의 칸 수식이 ${hit.map(x => `[${x}]`).join('·')}을(를) 써서 [${n.name}] 단계는 그 뒤에 계산해야 합니다`);
+      }
+    }
+    return [...new Set(out)];
+  }
+
   function finalNodeId(strategy) {
     if (strategy.finalNodeId && strategy.nodes.some(n => n.id === strategy.finalNodeId)) return strategy.finalNodeId;
     const hasOut = new Set(strategy.edges.map(e => e.from));
@@ -735,7 +750,14 @@
 
     if (cycle.length) {
       result.status = 'error';
-      result.errors.push(`순서가 고리처럼 돌아가는 단계가 있습니다: ${cycle.map(id => idx.nodes.get(id).name).join(', ')}`);
+      const msg = `순서가 고리처럼 돌아가는 단계가 있습니다: ${cycle.map(id => idx.nodes.get(id).name).join(', ')}`;
+      const cause = cycleTables(idx, cycle);
+      result.errors.push(cause.length ? `${msg} — ${cause.join(' / ')}` : msg);
+      // 계산을 하나도 하지 않았다 — 고리에 걸린 단계는 "순환", 나머지는 "계산 중단"으로 보인다("경로 아님"과 구분)
+      const inCycle = new Set(cycle);
+      for (const n of strategy.nodes) {
+        steps[n.id] = inCycle.has(n.id) ? { active: false, value: null, cycle: true, error: msg } : { active: false, value: null, stopped: true };
+      }
       return result;
     }
 
