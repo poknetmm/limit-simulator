@@ -20,7 +20,7 @@
   let bulkHost, cmpHost;
   let data = null;           // {fileName, headers, rows, idCol}
   let mapping = {};          // 지금 전략의 열 key → 엑셀 제목 번호(-1 = 없음)
-  let bulk = null;           // {stamp, rows:[{id, status, final, det, errors, warnings, values}]}
+  let bulk = null;           // {stamp, rows:[{id, status, final, det, errors, warnings}]}
   let base = null;           // 비교 기준 {strategy, label, at}
   let cmp = null;            // {stamp, rows:[{id, a, b, diff}]}
   let busy = false;
@@ -135,8 +135,8 @@
   // ── 계산 ────────────────────────────────────────────────────────────────
   const rowId = (row, i) => (data.idCol >= 0 && row[data.idCol] !== null && String(row[data.idCol]).trim() !== '' ? String(row[data.idCol]) : `${i + 1}행`);
 
-  // 전략 하나를 데이터 전체에 돌린다. keepValues면 단계별 값도 남긴다(결과 내려받기용)
-  async function runAll(strategy, map, keepValues, onProgress) {
+  // 전략 하나를 데이터 전체에 돌린다
+  async function runAll(strategy, map, onProgress) {
     const cs = E.inputColumns(strategy);
     const prep = E.prepare(strategy);
     const out = [];
@@ -148,7 +148,6 @@
         let r;
         try { r = E.evaluate(strategy, inputs, prep); } catch (e) { r = { status: 'error', final: null, errors: [e.message], steps: {} }; }
         const rec = { id: rowId(row, i), status: r.status, final: r.final, det: (r.status === 'reject' ? r.reason : r.determinant) || '', errors: r.errors || [], warnings };
-        if (keepValues) rec.values = Object.fromEntries(Object.entries(r.steps).filter(([, st]) => st.active && !st.error).map(([id, st]) => [id, st.value]));
         out.push(rec);
       }
       if ((i + 1) % CHUNK === 0) { onProgress(i + 1); await yieldToUI(); }
@@ -161,7 +160,7 @@
     busy = true;
     const prog = bulkHost.querySelector('.bulk-progress');
     try {
-      const rows = await runAll(S.strategy, currentMapping(), true, (n) => { if (prog) prog.textContent = `계산 중… ${n.toLocaleString('ko-KR')} / ${data.rows.length.toLocaleString('ko-KR')}건`; });
+      const rows = await runAll(S.strategy, currentMapping(), (n) => { if (prog) prog.textContent = `계산 중… ${n.toLocaleString('ko-KR')} / ${data.rows.length.toLocaleString('ko-KR')}건`; });
       bulk = { stamp: S.strategy.meta.updated, rows };
     } finally { busy = false; }
     renderBulk();
@@ -245,21 +244,17 @@
       list.length > SHOW_MAX ? h('div', { class: 'hint' }, `처음 ${SHOW_MAX}건만 보여 줍니다. 전체는 결과 내려받기로 확인하세요.`) : null);
   }
 
-  function downloadBulk() {
-    const s = S.strategy;
-    const { order } = E.order(s);
-    const nodes = order.map(id => s.nodes.find(n => n.id === id));
-    const head = [...data.headers, '상태', '최종한도', '결정요인·거절 사유', '오류·알림', ...nodes.map(n => `[단계] ${n.name}`)];
-    const rows = data.rows.map((row, i) => {
-      const x = bulk.rows[i];
-      return [...data.headers.map((_, j) => row[j] ?? null), statusText[x.status], x.final, x.det, [...x.errors, ...x.warnings].join(' / '),
-        ...nodes.map(n => (x.values && n.id in x.values ? x.values[n.id] : null))];
-    });
-    const wb = XLSX().utils.book_new();
-    const ws = XLSX().utils.aoa_to_sheet([head, ...rows]);
-    ws['!cols'] = head.map(x => ({ wch: Math.min(28, Math.max(10, String(x).length * 2)) }));
-    XLSX().utils.book_append_sheet(wb, ws, '결과');
-    XLSX().writeFile(wb, `${safe(s.meta.name)}_대량결과.xlsx`);
+  // 결과 내려받기 = 전략 엑셀(수식) 형식에 대량 데이터를 채운 것. 단계마다 수식, 끝에 웹 계산값·일치 열
+  async function downloadBulk() {
+    const s = S.strategy, cs = E.inputColumns(s), map = currentMapping();
+    if (data.rows.length > 5000) { root.App.flash(`${data.rows.length.toLocaleString('ko-KR')}건 — 수식이 많아 엑셀을 열 때 시간이 걸릴 수 있습니다`, 'info'); await yieldToUI(); }
+    try {
+      const rows = data.rows.map((row, i) => ({ id: bulk.rows[i].id, inputs: E.rowInputs(s, cs, map, row).inputs, web: bulk.rows[i] }));
+      const model = root.XlsxExport.build(s, { web: true, rows, describe: root.Describe.describe });
+      XLSX().writeFile(root.XlsxExport.toWorkbook(model, XLSX()), `${safe(s.meta.name)}_대량결과.xlsx`, { compression: true });
+    } catch (e) {
+      root.App.flash(e instanceof root.XlsxExport.ExportError ? e.message : `엑셀로 바꾸지 못했습니다: ${e.message}`, 'danger');
+    }
   }
 
   // ── 대량 시뮬레이션 탭 ──────────────────────────────────────────────────
@@ -352,8 +347,8 @@
     const prog = cmpHost.querySelector('.bulk-progress');
     try {
       const total = data.rows.length;
-      const a = await runAll(base.strategy, baseMapping(), false, (n) => { if (prog) prog.textContent = `기준(A) 계산 중… ${n.toLocaleString('ko-KR')} / ${total.toLocaleString('ko-KR')}건`; });
-      const b = await runAll(S.strategy, currentMapping(), false, (n) => { if (prog) prog.textContent = `지금 전략(B) 계산 중… ${n.toLocaleString('ko-KR')} / ${total.toLocaleString('ko-KR')}건`; });
+      const a = await runAll(base.strategy, baseMapping(), (n) => { if (prog) prog.textContent = `기준(A) 계산 중… ${n.toLocaleString('ko-KR')} / ${total.toLocaleString('ko-KR')}건`; });
+      const b = await runAll(S.strategy, currentMapping(), (n) => { if (prog) prog.textContent = `지금 전략(B) 계산 중… ${n.toLocaleString('ko-KR')} / ${total.toLocaleString('ko-KR')}건`; });
       cmp = { stamp: S.strategy.meta.updated, rows: a.map((x, i) => ({ id: x.id, index: i, a: x, b: b[i], diff: (b[i].final ?? 0) - (x.final ?? 0) })) };
     } finally { busy = false; }
     renderCompare();

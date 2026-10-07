@@ -46,6 +46,19 @@
     bar.hidden = false;
   }
 
+  // 전략 엑셀(수식) 내려받기: 단일 시뮬레이션의 지금 입력값을 채운 한 줄. 줄을 아래로 복사해 더 계산한다
+  function downloadXlsx() {
+    const s = S.strategy;
+    try {
+      const model = root.XlsxExport.build(s, { fillDefaults: true, rows: [{ id: 1, inputs: S.evalInputs() }], describe: root.Describe.describe });
+      const name = `${String(s.meta.name || '전략').replace(/[\\/:*?"<>|]/g, '_')}_전략엑셀.xlsx`;
+      root.XLSX.writeFile(root.XlsxExport.toWorkbook(model, root.XLSX), name, { compression: true });
+      flash(`"${name}"을(를) 내려받았습니다 — 고객 입력값 칸만 고치면 계산됩니다`, 'ok');
+    } catch (e) {
+      flash(e instanceof root.XlsxExport.ExportError ? e.message : `엑셀로 바꾸지 못했습니다: ${e.message}`, 'danger');
+    }
+  }
+
   // 로컬 PC에 저장(내보내기): 창에서 정한 이름으로 .json을 내려받는다. 열린 전략의 이름은 바꾸지 않는다
   function exportDialog(after) {
     const name = h('input', { type: 'text', class: 'login-input', value: S.strategy.meta.name, maxlength: '80', 'aria-label': '파일 이름' });
@@ -303,6 +316,7 @@
     $('#menuExample').addEventListener('click', () => guard(() => { S.openExample(0); flash('예시 전략 사본을 열었습니다', 'info'); }, '예시 전략 열기'));
     $('#menuImport').addEventListener('click', () => guard(pickFile, '파일 가져오기'));
     $('#menuExport').addEventListener('click', () => exportDialog());
+    $('#menuXlsx').addEventListener('click', downloadXlsx);
     $('#topExport').addEventListener('click', () => exportDialog());
     $('#topSave').addEventListener('click', () => { if (root.Cloud.user) root.Cloud.save(); else flash('로그인한 뒤 서버에 저장할 수 있습니다', 'info'); });
 
