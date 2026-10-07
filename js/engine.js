@@ -191,7 +191,37 @@
     return to === undefined ? `${fmtNum(from)} 이상` : `${fmtNum(from)} 이상 ~ ${fmtNum(to)} 미만`;
   }
 
-  function lookupTable(tv, rowKey, colKey) {
+  // 칸 값이 "="로 시작하면 계산식이다(엑셀과 같다) — 예: =[연소득] * 0.1. 고른 칸만 그때 계산한다
+  const isCellFormula = (v) => typeof v === 'string' && v.trim().startsWith('=');
+  const cellAsts = new Map();
+  function cellAst(text) {
+    if (!cellAsts.has(text)) {
+      try { cellAsts.set(text, parseTokens(tokenize(text.trim().slice(1)))); }
+      catch (e) { if (!(e instanceof CalcError)) throw e; cellAsts.set(text, e); }
+    }
+    const a = cellAsts.get(text);
+    if (a instanceof Error) throw a;
+    return a;
+  }
+  function cellValue(tv, r, c, resolve) {
+    const v = (tv.cells[r] || [])[c];
+    if (!isCellFormula(v)) return v;
+    const where = `표 [${tv.name}] ${axisKeyLabel(tv.rows, r)}${tv.cols ? ` × ${axisKeyLabel(tv.cols, c)}` : ''} 칸 수식`;
+    if (!resolve) throw new CalcError(`${where}은(는) 계산 단계 안에서만 계산합니다`);
+    try { return evalAst(cellAst(v), resolve); }
+    catch (e) { if (!(e instanceof CalcError)) throw e; throw new CalcError(`${where}: ${e.message}`); }
+  }
+  // 표의 계산식 칸이 [ ]로 가리키는 이름들(순서 계산·참조 검사용)
+  function cellFormulaNames(tv) {
+    const out = [];
+    for (const row of tv.cells || []) for (const v of row || []) {
+      if (!isCellFormula(v)) continue;
+      try { out.push(...tokenize(v.trim().slice(1)).filter(t => t.t === 'name').map(t => t.v)); } catch (e) { /* 문법 오류는 검증 단계에서 알린다 */ }
+    }
+    return out;
+  }
+
+  function lookupTable(tv, rowKey, colKey, resolve) {
     const r = axisIndex(tv.rows, rowKey);
     if (r < 0) throw new CalcError(`표 [${tv.name}]에 행 기준값 ${fmtRaw(rowKey)}에 해당하는 칸이 없습니다`);
     let c = 0;
@@ -199,13 +229,13 @@
       c = axisIndex(tv.cols, colKey);
       if (c < 0) throw new CalcError(`표 [${tv.name}]에 열 기준값 ${fmtRaw(colKey)}에 해당하는 칸이 없습니다`);
     }
-    const v = (tv.cells[r] || [])[c];
+    const v = cellValue(tv, r, c, resolve);
     if (v === null || v === undefined || v === '') throw new CalcError(`표 [${tv.name}]의 칸이 비어 있습니다 (${axisKeyLabel(tv.rows, r)})`);
     return v;
   }
 
   // 구간 누진 합산: 구간마다 (구간 안에 든 금액 × 구간 값)을 더한다 — 누진세 계산과 같다
-  function progressiveSum(tv, x) {
+  function progressiveSum(tv, x, resolve) {
     if (tv.rows.mode !== 'band' || tv.cols) throw new CalcError(`표 [${tv.name}]은(는) 1차원 구간표여야 누진 합산할 수 있습니다`);
     const keys = tv.rows.keys;
     let sum = 0;
@@ -213,7 +243,7 @@
       const from = keys[i];
       const to = i + 1 < keys.length ? keys[i + 1] : Infinity;
       const part = Math.max(Math.min(x, to) - from, 0);
-      if (part > 0) sum += part * num(tv.cells[i][0], `표 [${tv.name}] ${axisKeyLabel(tv.rows, i)}`);
+      if (part > 0) sum += part * num(cellValue(tv, i, 0, resolve), `표 [${tv.name}] ${axisKeyLabel(tv.rows, i)}`);
     }
     return sum;
   }
@@ -618,6 +648,16 @@
         }
       } catch (e) { /* 문법 오류는 검증 단계에서 알린다 */ }
     }
+    // 조회하는 표의 계산식 칸이 가리키는 변수·단계에도 기댄다(그 단계가 먼저 계산돼야 한다)
+    if (idx) {
+      for (const r of [...out]) {
+        const tv = r.k === 'var' && idx.vars.get(r.id);
+        if (!tv || tv.type !== 'table') continue;
+        for (const v of cellFormulaNames(tv)) {
+          if (idx.byName.has(v)) { const x = idx.byName.get(v); out.push(x.k === 'part' ? partOwner(x) : x); }
+        }
+      }
+    }
     return out;
   }
 
@@ -830,7 +870,7 @@
               if (!ref || ref.k !== 'tbl') return resolve(ref);
               const tv = ref.table && idx.vars.get(ref.table.id);
               if (!tv || tv.type !== 'table') throw new CalcError('금리를 가져올 표를 고르세요');
-              return lookupTable(tv, resolve(ref.row), tv.cols ? resolve(ref.col) : null);
+              return lookupTable(tv, resolve(ref.row), tv.cols ? resolve(ref.col) : null, resolve);
             };
             let rate;
             try { rate = num(evalAst(astOf(`${node.id}#rate`), rateRef), '현가계수 금리'); }
@@ -878,13 +918,13 @@
         case 'lookup': {
           const tv = idx.vars.get(c.table && c.table.id);
           if (!tv || tv.type !== 'table') throw new CalcError('조회할 표를 고르세요');
-          step.value = lookupTable(tv, resolve(c.row), tv.cols ? resolve(c.col) : null);
+          step.value = lookupTable(tv, resolve(c.row), tv.cols ? resolve(c.col) : null, resolve);
           break;
         }
         case 'progressive': {
           const tv = idx.vars.get(c.table && c.table.id);
           if (!tv || tv.type !== 'table') throw new CalcError('누진 합산할 구간표를 고르세요');
-          step.value = progressiveSum(tv, num(resolve(c.base), refName(c.base)));
+          step.value = progressiveSum(tv, num(resolve(c.base), refName(c.base)), resolve);
           break;
         }
         case 'minmax': {
@@ -974,6 +1014,11 @@
           }
         } else if (new Set(ax.keys.map(String)).size !== ax.keys.length) issues.push(`표 [${v.name}]의 항목이 겹칩니다`);
       }
+      for (const row of v.cells || []) for (const x of row || []) {
+        if (!isCellFormula(x)) continue;
+        try { cellAst(x); } catch (e) { issues.push(`표 [${v.name}]의 칸 수식 ${x}: ${e.message}`); }
+      }
+      for (const name of cellFormulaNames(v)) if (name !== IN_NAME && !idx.byName.has(name)) issues.push(`표 [${v.name}]의 칸 수식에서 [${name}]를 찾을 수 없습니다`);
     }
     for (const n of strategy.nodes) {
       for (const r of collectRefs(n, idx)) {
@@ -1181,12 +1226,17 @@
     return strategy.nodes.filter(n => n.id !== id && collectRefs(n, idx).some(r => r.id === id));
   }
 
-  // 이름 변경 시 고급 수식 안의 [옛 이름]을 [새 이름]으로 바꾼다
+  // 이름 변경 시 고급 수식·표의 계산식 칸 안의 [옛 이름]을 [새 이름]으로 바꾼다
   function renameInFormulas(strategy, oldName, newName) {
+    const swap = (t) => t.split(`[${oldName}]`).join(`[${newName}]`)
+      .split(`[${oldName}${PART_SEP}`).join(`[${newName}${PART_SEP}`);   // 기초한도 줄·부채표 합계 이름
     for (const n of strategy.nodes) {
       if (n.type !== 'formula' || !n.config.text) continue;
-      n.config.text = n.config.text.split(`[${oldName}]`).join(`[${newName}]`)
-        .split(`[${oldName}${PART_SEP}`).join(`[${newName}${PART_SEP}`);   // 기초한도 줄·부채표 합계 이름
+      n.config.text = swap(n.config.text);
+    }
+    for (const v of strategy.variables) {
+      if (v.type !== 'table') continue;
+      v.cells = v.cells.map(row => row.map(x => (isCellFormula(x) ? swap(x) : x)));
     }
   }
 
@@ -1221,7 +1271,7 @@
     SCHEMA, NODE_TYPES, VAR_TYPES, CMP_OPS, IN_NAME, PVF_NAME, PVA_SLOTS, DEBT_PARTS, DEBT_MORT, PART_SEP, CalcError,
     pvaDefaultLines, rateTokens, refToken, partsOf, monthlyPayment, debtAggregate, inputColumns, autoMap, parseInputCell, rowInputs,
     prepare, evaluate, validate, order, index, findReferences, renameInFormulas, finalNodeId, migrate,
-    tokenize, parseTokens, evalAst, LANGS, parseFormula, formulaNames, lookupTable, progressiveSum, axisKeyLabel,
+    tokenize, parseTokens, evalAst, LANGS, parseFormula, formulaNames, lookupTable, progressiveSum, axisKeyLabel, isCellFormula,
     toNum, fmtNum, fmtValue, newId, emptyStrategy,
   };
 });

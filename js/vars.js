@@ -320,7 +320,7 @@
       drawGrid();
     });
     wrap.appendChild(h('div', { class: 'form-grid' }, field('행 기준', rowMode), field('열 기준', colMode)));
-    wrap.appendChild(h('div', { class: 'hint' }, '구간은 "시작값 이상 ~ 다음 시작값 미만"입니다. 엑셀에서 복사한 칸을 표 안에 붙여넣을 수 있습니다.'));
+    wrap.appendChild(h('div', { class: 'hint' }, '구간은 "시작값 이상 ~ 다음 시작값 미만"입니다. 엑셀에서 복사한 칸을 표 안에 붙여넣을 수 있습니다. 칸에 =[연소득] * 0.1 처럼 = 로 시작해 적으면 변수·단계를 쓴 계산식이 되고, 그 칸을 조회할 때 계산합니다.'));
     wrap.appendChild(gridHost);
 
     function drawGrid() {
@@ -368,7 +368,9 @@
       gridHost.appendChild(h('div', { class: 'row-actions' },
         h('button', { class: 'btn btn-small', onclick: () => { edit(x => { x.rows.keys.push(nextKey(x.rows, '항목')); x.cells.push(new Array(nCols).fill(0)); }); drawGrid(); } }, '+ 행 추가'),
         hasCols ? h('button', { class: 'btn btn-small', onclick: () => { edit(x => { x.cols.keys.push(nextKey(x.cols, '열')); x.cells.forEach(row => row.push(0)); }); drawGrid(); } }, '+ 열 추가') : null));
-      const issues = E.validate({ variables: [t], nodes: [], edges: [] }).filter(m => m.includes(t.name));
+      // 계산식 칸의 [이름]을 확인하려고 지금 전략의 변수·단계를 함께 넘긴다
+      const issues = E.validate({ variables: vars().map(x => (x.id === t.id ? t : x)), nodes: S.strategy.nodes, edges: [] })
+        .filter(m => m.startsWith(`표 [${t.name}]`));
       if (issues.length) gridHost.appendChild(h('div', { class: 'field-error' }, issues.join(' / ')));
       keep();
     }
@@ -603,6 +605,7 @@
     ['열 기준', '없음(1차원 표) · 목록 · 구간'],
     ['설명', '선택'],
     ['표 본문', '위 네 줄 아래 한 줄을 띄우고 제목 줄을 둡니다. 제목 줄의 첫 칸은 "행" 자리이고 그 오른쪽에 열 항목(열 기준이 없음이면 "값" 한 칸)을 적습니다. 그 아래로 한 줄에 "행 항목, 값…"을 적습니다. 행·열 수는 자유롭게 늘립니다.'],
+    ['계산식 칸', '값 대신 \'=[연소득] * 0.1 처럼 앞에 \' 를 붙여 글자로 적습니다(엑셀이 계산하지 않게). [ ] 안에는 변수·단계 이름을 씁니다.'],
     [],
     ['■ 부채표 시트 (부채표 하나에 시트 하나)'],
     ['부채표 이름', 'B1 칸에 부채표 이름'],
@@ -748,10 +751,14 @@
     const plan = { update: [], add: [], same: [], skipped: [...parsed.skipped] };
     const seen = new Set();
     const bare = (v) => JSON.stringify(Object.assign({}, v, { id: undefined }));
+    // 표 계산식 칸의 [이름]은 지금 변수·단계와 이 파일의 변수 중에서 찾는다
+    const names = new Set(parsed.items.map(p => p.name));
+    const firsts = parsed.items.filter((p, i, a) => a.findIndex(x => x.name === p.name) === i);
+    const all = E.validate({ variables: [...vars().filter(v => !names.has(v.name)), ...firsts], nodes: S.strategy.nodes, edges: [] });
     for (const p of parsed.items) {
       if (seen.has(p.name)) { plan.skipped.push([p.name, '파일 안에 같은 이름이 두 번 있습니다(처음 것만 씀)']); continue; }
       seen.add(p.name);
-      const issues = E.validate({ variables: [p], nodes: [], edges: [] });
+      const issues = all.filter(m => m.startsWith(`표 [${p.name}]`) || m.startsWith(`부채표 [${p.name}]`));
       if (issues.length) { plan.skipped.push([p.name, issues.join(' / ')]); continue; }
       const old = vars().find(v => v.name === p.name);
       if (!old) {
