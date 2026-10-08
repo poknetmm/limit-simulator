@@ -8,7 +8,7 @@
    · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
    · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
    · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다. 고른 도형은 Delete 키로 지운다(예/아니오 확인)
-   · 빈 곳을 끌면 손 모양으로 화면을 옮긴다. Shift를 누르고 끌면 사각형에 걸친 도형을 묶고, 묶은 도형 하나를 끌면 함께 옮긴다
+   · 빈 곳을 끌면 손 모양으로 화면을 옮긴다(상하좌우 어디로든 끌면 빈 판이 그쪽으로 넓어진다). Shift를 누르고 끌면 사각형에 걸친 도형을 묶고, 묶은 도형 하나를 끌면 함께 옮긴다
    · 위치가 없는 단계(예시 전략·가져온 파일)는 자동 배치한다
    · 단계 추가는 왼쪽 패널의 단계 팔레트(유형 타일)에서 한다 — 누르거나 캔버스로 끌어 놓는다. 새 단계는 고르기만 하고
      설정 패널은 한 번 더 눌러야 열린다. 도형 안쪽은 머리줄(아이콘·이름) / 구분선 / 유형·값
@@ -29,6 +29,7 @@
   let selectedNode = null, selectedEdge = null;
   let group = new Set();  // Shift+빈 곳을 끌어 묶은 도형들 — 그중 하나를 끌면 함께 옮긴다
   let zoom = 1;
+  let origin = { x: 0, y: 0 };   // 화면 이동으로 위·왼쪽에 더 낸 빈 판(단계 좌표 기준). 전략에는 저장하지 않는다
   let result = null;
   let drag = null;       // {kind:'move'|'connect', ...}
   let connecting = false; // 화살표를 끄는 중(가장자리 위 점 표시를 멈춘다)
@@ -286,7 +287,7 @@
   function onChange(reason) {
     if (reason === 'saved' || reason === 'exported' || reason === 'canvas-move') return;
     pendingReason = reason;
-    if (['load', 'new', 'example', 'import'].includes(reason)) { selectedNode = null; selectedEdge = null; group.clear(); root.Panel.show(null); lastVals = null; }
+    if (['load', 'new', 'example', 'import'].includes(reason)) { origin = { x: 0, y: 0 }; selectedNode = null; selectedEdge = null; group.clear(); root.Panel.show(null); lastVals = null; }
     if (selectedNode && !S.strategy.nodes.some(n => n.id === selectedNode)) { selectedNode = null; root.Panel.show(null); }
     for (const id of group) if (!S.strategy.nodes.some(n => n.id === id)) group.delete(id);
     render();
@@ -302,7 +303,7 @@
     }
     try { result = E.evaluate(s, S.evalInputs()); } catch (e) { result = { steps: {}, finalNodeId: null }; }
 
-    stage.style.transform = `scale(${zoom})`;
+    stage.style.transform = `translate(${origin.x * zoom}px, ${origin.y * zoom}px) scale(${zoom})`;
     fitStage(s.nodes);
     zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
 
@@ -317,15 +318,15 @@
 
   // 캔버스 크기: 도형이 놓인 범위 + 오른쪽·아래 여유(MORE_X·MORE_Y). 끄는 중에도 불러 끝까지 넓힌다.
   // 위·왼쪽은 놓을 때 전체를 밀어 넓힌다(normalize)
-  // 지금 보이는 범위(스크롤 위치 + 화면)보다는 줄이지 않는다 — 줄이면 스크롤이 튄다
+  // 지금 보이는 범위(스크롤 위치 + 화면)보다는 줄이지 않는다 — 줄이면 스크롤이 튄다. 화면 이동으로 낸 위·왼쪽 빈 판(origin)만큼 앞을 띄운다
   function fitStage(nodes, more) {
     more = more || { x: 0, y: 0 };
-    const maxX = Math.max((scrollEl.scrollLeft + scrollEl.clientWidth) / zoom + more.x, ...nodes.map(n => n.x + W + MORE_X));
-    const maxY = Math.max((scrollEl.scrollTop + scrollEl.clientHeight) / zoom + more.y, ...nodes.map(n => n.y + H + MORE_Y));
+    const maxX = Math.max((scrollEl.scrollLeft + scrollEl.clientWidth) / zoom - origin.x + more.x, ...nodes.map(n => n.x + W + MORE_X));
+    const maxY = Math.max((scrollEl.scrollTop + scrollEl.clientHeight) / zoom - origin.y + more.y, ...nodes.map(n => n.y + H + MORE_Y));
     stage.style.width = `${maxX}px`;
     stage.style.height = `${maxY}px`;
-    sizer.style.width = `${maxX * zoom}px`;
-    sizer.style.height = `${maxY * zoom}px`;
+    sizer.style.width = `${(maxX + origin.x) * zoom}px`;
+    sizer.style.height = `${(maxY + origin.y) * zoom}px`;
     svg.setAttribute('width', maxX);
     svg.setAttribute('height', maxY);
   }
@@ -596,19 +597,30 @@
     return ev.clientX >= r.left + scrollEl.clientLeft + scrollEl.clientWidth || ev.clientY >= r.top + scrollEl.clientTop + scrollEl.clientHeight;
   }
 
-  // 빈 곳을 끌면 손 모양으로 화면을 옮긴다. 끌지 않고 떼면 선택 해제
+  // 빈 곳을 끌면 손 모양으로 화면을 옮긴다. 판 끝을 넘겨 끌면 그쪽으로 빈 판을 넓힌다. 끌지 않고 떼면 선택 해제
   function startPan(ev) {
     if (ev.button !== 0 || onScrollbar(ev)) return;
     ev.preventDefault();
-    const x0 = ev.clientX, y0 = ev.clientY, sl = scrollEl.scrollLeft, st = scrollEl.scrollTop;
+    const x0 = ev.clientX, y0 = ev.clientY;
+    let sl = scrollEl.scrollLeft, st = scrollEl.scrollTop;
     let moved = false;
     capture(scrollEl, ev);
     scrollEl.classList.add('panning');
     scrollEl.onpointermove = (e2) => {
       if (!moved && Math.hypot(e2.clientX - x0, e2.clientY - y0) < 5) return;
       moved = true;
-      scrollEl.scrollLeft = sl - (e2.clientX - x0);
-      scrollEl.scrollTop = st - (e2.clientY - y0);
+      let tx = sl - (e2.clientX - x0), ty = st - (e2.clientY - y0);
+      // 위·왼쪽 끝을 넘기면 넘긴 만큼 앞에 빈 판을 내고, 그만큼 기준 스크롤도 민다
+      const gx = tx < 0 ? Math.ceil(-tx / zoom) : 0, gy = ty < 0 ? Math.ceil(-ty / zoom) : 0;
+      if (gx || gy) {
+        origin = { x: origin.x + gx, y: origin.y + gy };
+        stage.style.transform = `translate(${origin.x * zoom}px, ${origin.y * zoom}px) scale(${zoom})`;
+        sl += gx * zoom; st += gy * zoom; tx += gx * zoom; ty += gy * zoom;
+      }
+      // 오른쪽·아래는 갈 자리만큼 판을 늘린 뒤 옮긴다
+      fitStage(S.strategy.nodes, { x: (tx - scrollEl.scrollLeft) / zoom, y: (ty - scrollEl.scrollTop) / zoom });
+      scrollEl.scrollLeft = tx;
+      scrollEl.scrollTop = ty;
     };
     scrollEl.onpointerup = scrollEl.onpointercancel = () => {
       scrollEl.onpointermove = scrollEl.onpointerup = scrollEl.onpointercancel = null;
@@ -877,15 +889,15 @@
     const id = E.newId('n');
     const sel = at ? null : s.nodes.find(n => n.id === selectedNode);
     let x, y;
-    if (at) { x = Math.max(0, Math.round(at.x / GRID) * GRID); y = Math.max(0, Math.round(at.y / GRID) * GRID); }
+    if (at) { x = Math.round(at.x / GRID) * GRID; y = Math.round(at.y / GRID) * GRID; }
     else if (sel) { x = sel.x; y = sel.y + H + GY; }
     else {
       // 보이는 화면 가운데 — 설정 팝업이 덮은 아래쪽은 뺀다(왼쪽 위 떠 있는 도구와 겹치지 않게)
       const covered = drawer.classList.contains('open') ? drawer.offsetHeight : 0;
-      const cx = (scrollEl.scrollLeft + scrollEl.clientWidth / 2) / zoom - W / 2;
-      const cy = (scrollEl.scrollTop + Math.max(H * zoom, scrollEl.clientHeight - covered) / 2) / zoom - H / 2;
-      x = Math.max(0, Math.round(cx / GRID) * GRID);
-      y = Math.max(0, Math.round(cy / GRID) * GRID);
+      const cx = (scrollEl.scrollLeft + scrollEl.clientWidth / 2) / zoom - origin.x - W / 2;
+      const cy = (scrollEl.scrollTop + Math.max(H * zoom, scrollEl.clientHeight - covered) / 2) / zoom - origin.y - H / 2;
+      x = Math.round(cx / GRID) * GRID;
+      y = Math.round(cy / GRID) * GRID;
     }
     // 겹치면 아래로 내린다(끌어 놓은 자리는 그대로)
     if (!at) while (s.nodes.some(n => Math.abs(n.x - x) < W && Math.abs(n.y - y) < H)) y += H + GY;
@@ -893,6 +905,12 @@
       // 새 단계는 이름 뒤에 구분값을 붙인다(sfx) — 이름 칸에는 앞부분만 쓴다
       const config = defaultConfig(type);
       st.nodes.push({ id, name: S.suffixedName('새 단계', E.nodeSuffix({ type, config }), id), sfx: true, type, config, format: type === 'pva' ? 'money' : 'number', x, y });
+      // 화면 이동으로 낸 위·왼쪽 빈 판에 놓았으면 전체를 0 위치까지 밀고 그만큼 빈 판을 줄여 화면은 제자리
+      const dx = Math.max(0, -x), dy = Math.max(0, -y);
+      if (dx || dy) {
+        for (const n of st.nodes) { n.x += dx; n.y += dy; }
+        origin = { x: Math.max(0, origin.x - dx), y: Math.max(0, origin.y - dy) };
+      }
       if (sel) {
         const used = new Set(st.edges.filter(e => e.from === sel.id).map(e => e.label));
         const label = sel.type === 'branch' ? (ports(sel).find(l => !used.has(l)) || ports(sel)[0]) : null;
