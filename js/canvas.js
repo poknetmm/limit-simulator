@@ -8,7 +8,7 @@
    · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
    · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
    · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다. 고른 도형은 Delete 키로 지운다(예/아니오 확인)
-   · 빈 곳을 끌면 사각형에 걸친 도형을 묶고, 묶은 도형 하나를 끌면 함께 옮긴다
+   · 빈 곳을 끌면 손 모양으로 화면을 옮긴다. Shift를 누르고 끌면 사각형에 걸친 도형을 묶고, 묶은 도형 하나를 끌면 함께 옮긴다
    · 위치가 없는 단계(예시 전략·가져온 파일)는 자동 배치한다
    · 단계 추가는 왼쪽 패널의 단계 팔레트(유형 타일)에서 한다 — 누르거나 캔버스로 끌어 놓는다. 새 단계는 고르기만 하고
      설정 패널은 한 번 더 눌러야 열린다. 도형 안쪽은 머리줄(아이콘·이름) / 구분선 / 유형·값
@@ -27,7 +27,7 @@
 
   let host, scrollEl, sizer, stage, svg, zoomLabel, drawer, dot;
   let selectedNode = null, selectedEdge = null;
-  let group = new Set();  // 빈 곳을 끌어 묶은 도형들 — 그중 하나를 끌면 함께 옮긴다
+  let group = new Set();  // Shift+빈 곳을 끌어 묶은 도형들 — 그중 하나를 끌면 함께 옮긴다
   let zoom = 1;
   let result = null;
   let drag = null;       // {kind:'move'|'connect', ...}
@@ -215,7 +215,7 @@
       tool('i-plus', '확대', () => setZoom(zoom + 0.1)),
       h('span', { class: 'tool-sep' }),
       tool('i-fit', '폭 맞춤|도형 전체가 가로로 들어오게 맞춥니다', fitWidth));
-    const hint = h('div', { class: 'canvas-hint' }, '도형 가장자리를 끌어 다른 도형에 놓으면 연결 · 화살표를 끌면 붙는 자리를 옮깁니다');
+    const hint = h('div', { class: 'canvas-hint' }, '도형 가장자리를 끌어 다른 도형에 놓으면 연결 · 화살표를 끌면 붙는 자리를 옮깁니다 · 빈 곳을 끌면 화면 이동, Shift+끌기는 묶음');
 
     svg = document.createElementNS(SVGNS, 'svg');
     svg.classList.add('edges');
@@ -226,7 +226,7 @@
     sizer = h('div', { class: 'canvas-sizer' }, stage);
     scrollEl = h('div', { class: 'canvas-scroll' }, sizer);
     scrollEl.addEventListener('pointerdown', (ev) => {
-      if (ev.target === scrollEl || ev.target === sizer || ev.target === stage || ev.target === svg) startMarquee(ev);
+      if (ev.target === scrollEl || ev.target === sizer || ev.target === stage || ev.target === svg) (ev.shiftKey ? startMarquee : startPan)(ev);
     });
     // 단계 팔레트의 타일을 끌어 놓으면 놓은 자리(도형 가운데)에 단계를 만든다
     scrollEl.addEventListener('dragover', (ev) => {
@@ -590,12 +590,36 @@
     };
   }
 
-  // 빈 곳을 끌면 사각형 안에 걸친 도형을 묶는다. 끌지 않고 떼면 선택 해제
-  function startMarquee(ev) {
-    if (ev.button !== 0) return;
-    // 스크롤 막대를 누른 경우는 그대로 둔다
+  // 스크롤 막대를 누른 경우는 그대로 둔다
+  function onScrollbar(ev) {
     const r = scrollEl.getBoundingClientRect();
-    if (ev.clientX >= r.left + scrollEl.clientLeft + scrollEl.clientWidth || ev.clientY >= r.top + scrollEl.clientTop + scrollEl.clientHeight) return;
+    return ev.clientX >= r.left + scrollEl.clientLeft + scrollEl.clientWidth || ev.clientY >= r.top + scrollEl.clientTop + scrollEl.clientHeight;
+  }
+
+  // 빈 곳을 끌면 손 모양으로 화면을 옮긴다. 끌지 않고 떼면 선택 해제
+  function startPan(ev) {
+    if (ev.button !== 0 || onScrollbar(ev)) return;
+    ev.preventDefault();
+    const x0 = ev.clientX, y0 = ev.clientY, sl = scrollEl.scrollLeft, st = scrollEl.scrollTop;
+    let moved = false;
+    capture(scrollEl, ev);
+    scrollEl.classList.add('panning');
+    scrollEl.onpointermove = (e2) => {
+      if (!moved && Math.hypot(e2.clientX - x0, e2.clientY - y0) < 5) return;
+      moved = true;
+      scrollEl.scrollLeft = sl - (e2.clientX - x0);
+      scrollEl.scrollTop = st - (e2.clientY - y0);
+    };
+    scrollEl.onpointerup = scrollEl.onpointercancel = () => {
+      scrollEl.onpointermove = scrollEl.onpointerup = scrollEl.onpointercancel = null;
+      scrollEl.classList.remove('panning');
+      if (!moved) select(null);
+    };
+  }
+
+  // Shift를 누르고 빈 곳을 끌면 사각형 안에 걸친 도형을 묶는다. 끌지 않고 떼면 선택 해제
+  function startMarquee(ev) {
+    if (ev.button !== 0 || onScrollbar(ev)) return;
     ev.preventDefault();
     const a = toStage(ev);
     const box = h('div', { class: 'marquee', hidden: true });

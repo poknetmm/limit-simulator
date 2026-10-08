@@ -324,7 +324,9 @@ input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
   flex:1;min-height:240px;overflow:auto;
   background-color:var(--bg);
   background-image:radial-gradient(circle, var(--rule-strong) 1px, transparent 1.3px);background-size:22px 22px;
+  cursor:grab;
 }
+.canvas-scroll.panning{cursor:grabbing}
 .canvas-sizer{position:relative}
 .canvas-stage{position:absolute;left:0;top:0;transform-origin:0 0}
 svg.edges{position:absolute;left:0;top:0;overflow:visible}
