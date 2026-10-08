@@ -139,6 +139,7 @@
 
   // ── 틀 ──────────────────────────────────────────────────────────────────
   function render() {
+    closeRefPop();
     resultHook = null;   // 앞 단계 편집기의 계산 과정 그리기가 다른 단계 결과로 불리지 않게(renderBody가 다시 건다)
     // 닫을 때는 내용을 지우지 않는다 — 내려가는 동안 빈 상자가 보이지 않게
     if (!nodeId) { pop.close(); resultEl = saveBtn = null; return; }
@@ -146,20 +147,26 @@
     const n = node();
     const s = draft;
 
+    // 구분값을 쓰는 단계(sfx)는 이름 칸에 앞부분만 쓰고, 뒤의 "_구분값"은 고정으로 붙여 보여 준다
+    const sfx = n.sfx ? E.nodeSuffix(n) : null;
+    const full = (v) => (sfx ? `${v}_${sfx}` : v);
     const nameErr = h('span', { class: 'field-error' });
-    const nameIn = h('input', { type: 'text', class: 'node-name-input', value: n.name, 'aria-label': '단계 이름' });
-    nameIn.addEventListener('input', () => { const p = S.nameProblem(nameIn.value, n.id); nameErr.textContent = p || ''; nameIn.classList.toggle('invalid', !!p); });
+    const nameIn = h('input', { type: 'text', class: 'node-name-input', value: n.sfx ? baseName(n) : n.name, 'aria-label': '단계 이름' });
+    const problem = (v) => (sfx && !v.trim() ? '이름을 입력하세요' : S.nameProblem(full(v.trim()), n.id));
+    nameIn.addEventListener('input', () => { const p = problem(nameIn.value); nameErr.textContent = p || ''; nameIn.classList.toggle('invalid', !!p); });
     nameIn.addEventListener('change', () => {
-      const v = nameIn.value.trim();
-      if (S.nameProblem(v, n.id) || v === n.name) { nameIn.value = n.name; nameErr.textContent = ''; nameIn.classList.remove('invalid'); return; }
+      const v = full(nameIn.value.trim());
+      if (problem(nameIn.value) || v === n.name) { nameIn.value = n.sfx ? baseName(n) : n.name; nameErr.textContent = ''; nameIn.classList.remove('invalid'); return; }
       const old = n.name;
       commit((m, st) => { m.name = v; E.renameInFormulas(st, old, v); });
     });
 
     const typeSel = select(Object.entries(E.NODE_TYPES), n.type, (t) => {
       commit((m, st) => {
+        const base = m.sfx && baseName(m);
         m.type = t;
         m.config = root.Canvas.defaultConfig(t);
+        if (m.sfx) resuffix(m, st, base);
         const first = root.Canvas.ports(m)[0];
         for (const e of st.edges) if (e.from === m.id) { if (t === 'branch') e.label = first; else delete e.label; }
       });
@@ -180,7 +187,9 @@
 
     drawer.append(
       h('div', { class: 'drawer-head' },
-        h('div', { class: 'drawer-title' }, nameIn, nameErr),
+        h('div', { class: 'drawer-title' },
+          sfx ? h('div', { class: 'name-sfx' }, nameIn, h('span', { class: 'sfx', title: '단계 구분값 — 계산 유형에 따라 붙습니다(변수·표 이름과 겹치지 않게)' }, `_${sfx}`)) : nameIn,
+          nameErr),
         h('label', { class: 'mini-field' }, h('span', {}, '계산 유형'), typeSel),
         h('label', { class: 'mini-field' }, h('span', {}, '표시'), fmtSel),
         h('label', { class: 'check', for: 'finalCb', title: '비워 두면 흐름의 마지막 단계가 최종한도입니다' }, finalCb, ' 최종한도 단계'),
@@ -194,6 +203,18 @@
     refreshState();
     renderBody();
     pop.open();   // 내용을 채운 뒤 열어야 높이(--pop-h)가 맞게 잡힌다
+  }
+
+  // 구분값을 쓰는 단계의 앞부분 이름 / 유형·최소최대가 바뀌어 구분값이 달라지면 이름을 고쳐 붙인다(수식 안 이름도)
+  function baseName(m) {
+    const x = `_${E.nodeSuffix(m)}`;
+    return m.name.endsWith(x) ? m.name.slice(0, -x.length) : m.name;
+  }
+  function resuffix(m, st, base) {
+    const old = m.name, v = `${base}_${E.nodeSuffix(m)}`;
+    if (v === old) return;
+    m.name = S.nameProblem(v, m.id) ? S.suffixedName(base, E.nodeSuffix(m), m.id) : v;
+    E.renameInFormulas(st, old, m.name);
   }
 
   // 저장 전이면 사본을 반영한 미리보기로 계산한다 — 저장하기 전에 결과를 확인할 수 있게
@@ -235,10 +256,23 @@
     if (resultHook) updateResult();
   }
 
+  // 이 단계로 화살표를 거슬러 올라가 닿는 앞 단계들 — 값으로 고를 단계 목록을 이것만으로 줄인다
+  // (다른 경로의 단계를 고르면 "이번 계산 경로에 없습니다" 오류가 나고, 목록이 너무 길어지기 때문)
+  function upstream(id) {
+    const s = S.strategy, seen = new Set(), stack = [id];
+    while (stack.length) {
+      const cur = stack.pop();
+      for (const e of s.edges) if (e.to === cur && !seen.has(e.from) && e.from !== id) { seen.add(e.from); stack.push(e.from); }
+    }
+    return seen;
+  }
+
   // 고급 수식에 쓸 수 있는 이름: 변수·단계 + 중간값(예: 기초 PVA › 실질월가처분소득, 보유부채 › 고금리채무)
-  function allNames(excludeId) {
+  // onlyUpstreamOf를 주면 단계는 그 단계의 화살표 앞 단계만(이름 넣기 목록용). 이름 검사에는 주지 않는다
+  function allNames(excludeId, onlyUpstreamOf) {
     const s = S.strategy;
-    return [...s.variables, ...s.nodes.filter(x => x.id !== excludeId)].flatMap(x =>
+    const up = onlyUpstreamOf ? upstream(onlyUpstreamOf) : null;
+    return [...s.variables, ...s.nodes.filter(x => x.id !== excludeId && (!up || up.has(x.id)))].flatMap(x =>
       [x.name, ...E.partsOf(x).map(([, label]) => `${x.name}${E.PART_SEP}${label}`)]);
   }
 
@@ -274,16 +308,19 @@
     if (o.lines) sel.appendChild(optgroup('이 기초한도', [...o.lines.map(([id, name]) => [`line:${id}`, name]), ['pvf', E.PVF_NAME]]));
     const vars = s.variables.filter(v => v.type !== 'table');
     // 부채표는 값 대신 합계(월 원리금 합계·총채무·부동산 잔액·신용채무·고금리채무)를 고른다
-    const ins = vars.filter(v => v.kind === 'input'), pars = vars.filter(v => v.kind !== 'input' && v.type !== 'debt');
-    if (ins.length) sel.appendChild(optgroup('고객 입력값', ins.flatMap(v => v.type === 'debt'
-      ? E.partsOf(v).map(([part, label]) => [`part:${v.id}:${part}`, `${v.name}${E.PART_SEP}${label}`])
-      : [[`var:${v.id}`, v.name]])));
+    const ins = vars.filter(v => v.kind === 'input' && v.type !== 'debt'), debts = vars.filter(v => v.kind === 'input' && v.type === 'debt');
+    const pars = vars.filter(v => v.kind !== 'input' && v.type !== 'debt');
+    if (ins.length) sel.appendChild(optgroup('고객 입력값', ins.map(v => [`var:${v.id}`, v.name])));
+    if (debts.length) sel.appendChild(optgroup('부채표', debts.flatMap(v => E.partsOf(v).map(([part, label]) => [`part:${v.id}:${part}`, `${v.name}${E.PART_SEP}${label}`]))));
     if (pars.length) sel.appendChild(optgroup('전략 파라미터', pars.map(v => [`var:${v.id}`, `${v.name} (${E.fmtValue(v.value, v.type)})`])));
     const { order } = E.order(s);
     const byId = new Map(s.nodes.map(n => [n.id, n]));
-    const nodes = [...order, ...s.nodes.map(n => n.id).filter(id => !order.includes(id))].map(id => byId.get(id)).filter(n => n.id !== o.exclude);
+    // 화살표 앞 단계만 보여 준다. 이미 고른 단계가 목록 밖이면 그 단계도 남겨 둔다(지금 설정이 사라져 보이지 않게)
+    const up = upstream(nodeId);
+    const nodes = [...order, ...s.nodes.map(n => n.id).filter(id => !order.includes(id))].map(id => byId.get(id))
+      .filter(n => n.id !== o.exclude && (up.has(n.id) || (ref && (ref.k === 'node' || ref.k === 'part') && ref.id === n.id)));
     // 기초한도 단계는 중간값(실질월가처분소득·현가계수 등)도 고를 수 있다
-    if (nodes.length) sel.appendChild(optgroup('계산 단계', nodes.flatMap(n => [[`node:${n.id}`, n.name],
+    if (nodes.length) sel.appendChild(optgroup('계산 단계 (화살표 앞 단계)', nodes.flatMap(n => [[`node:${n.id}`, n.name],
       ...E.partsOf(n).map(([part, label]) => [`part:${n.id}:${part}`, `${n.name}${E.PART_SEP}${label}`])])));
 
     let cur = '';
@@ -311,6 +348,19 @@
         extra.appendChild(t);
       }
     };
+    // 보이는 것은 고르기 버튼(구분 칩 + 이름). 목록·값 처리는 숨긴 select가 그대로 맡는다
+    sel.hidden = true;
+    const pickBtn = h('button', { class: 'ref-btn', type: 'button', 'aria-haspopup': 'dialog' });
+    const drawBtn = () => {
+      clear(pickBtn);
+      const op = sel.selectedOptions[0];
+      const g = op && op.value && op.parentElement.tagName === 'OPTGROUP' ? op.parentElement.label : '';
+      if (g) pickBtn.appendChild(catChip(g));
+      pickBtn.append(h('span', { class: op && op.value ? 'ref-txt' : 'ref-txt muted' }, op ? op.textContent : '— 선택 —'), h('span', { class: 'ref-caret' }, '▾'));
+    };
+    pickBtn.addEventListener('click', () => { if (refPop && refPop.anchor === pickBtn) closeRefPop(); else openRefPop(sel, pickBtn, !!o.optional); });
+    sel.addEventListener('change', drawBtn);
+    drawBtn();
     sel.addEventListener('change', () => {
       const v = sel.value;
       if (!v) current = null;
@@ -327,7 +377,77 @@
       onPick(current);
     });
     drawExtra();
-    return h('span', { class: 'ref-picker' }, sel, extra);
+    return h('span', { class: 'ref-picker' }, sel, pickBtn, extra);
+  }
+
+  // 값 고르기 창의 구분: 목록 묶음 이름 → 짧은 이름·색(고객 입력 = 파랑, 파라미터 = 강조, 단계 = 초록, 그 밖 = 회색)
+  function catOf(label) {
+    if (label === '고객 입력값') return ['고객입력', 'c-flow'];
+    if (label === '부채표') return ['부채표', 'c-flow'];
+    if (label === '전략 파라미터') return ['파라미터', 'c-calc'];
+    if (label.startsWith('계산 단계')) return ['단계', 'c-look'];
+    if (label === '이 기초한도') return ['이 기초한도', 'c-look'];
+    if (label.endsWith('의 선택지')) return ['선택지', 'c-etc'];
+    return [label, 'c-etc'];   // 직접 입력 · 합류 · 예/아니오
+  }
+  const catChip = (label) => { const [t, c] = catOf(label); return h('span', { class: `ref-cat ${c}` }, t); };
+
+  // 값 고르기 창: 검색 칸 + 구분 탭 + 항목 목록. 고르면 숨긴 select의 값을 바꾸고 change를 보낸다
+  let refPop = null;
+  function closeRefPop() {
+    if (!refPop) return;
+    refPop.remove();
+    document.removeEventListener('pointerdown', refPop.onOutside, true);
+    refPop = null;
+  }
+  function openRefPop(sel, anchor, optional) {
+    closeRefPop();
+    const groups = [...sel.querySelectorAll('optgroup')].map(g => ({ label: g.label, opts: [...g.children].map(x => [x.value, x.textContent]) }));
+    let tab = '전체';
+    const q = h('input', { type: 'search', class: 'ref-search', placeholder: '이름으로 찾기', 'aria-label': '값 찾기' });
+    const tabs = h('div', { class: 'ref-tabs', role: 'tablist' });
+    const list = h('div', { class: 'ref-list' });
+    const pick = (v) => { closeRefPop(); sel.value = v; sel.dispatchEvent(new Event('change')); anchor.focus(); };
+    const drawList = () => {
+      clear(list);
+      const w = q.value.trim();
+      let first = null;
+      if (optional && tab === '전체' && !w) list.appendChild(h('button', { class: 'ref-item', type: 'button', onclick: () => pick('') }, h('span', { class: 'muted' }, '(없음)')));
+      for (const g of groups) {
+        if (tab !== '전체' && catOf(g.label)[0] !== tab) continue;
+        const opts = g.opts.filter(([, t]) => !w || t.includes(w));
+        if (!opts.length) continue;
+        if (tab === '전체') list.appendChild(h('div', { class: 'ref-group' }, catChip(g.label)));
+        for (const [v, t] of opts) {
+          const it = h('button', { class: `ref-item${v === sel.value ? ' on' : ''}`, type: 'button', onclick: () => pick(v) }, t);
+          first = first || v;
+          list.appendChild(it);
+        }
+      }
+      if (!list.children.length) list.appendChild(h('div', { class: 'muted small ref-none' }, w ? `"${w}"에 맞는 항목이 없습니다` : '고를 수 있는 항목이 없습니다'));
+      q.dataset.first = first || '';
+    };
+    const drawTabs = () => {
+      clear(tabs);
+      const names = ['전체', ...new Set(groups.map(g => catOf(g.label)[0]))];
+      for (const t of names) tabs.appendChild(h('button', { class: `ref-tab${t === tab ? ' on' : ''}`, type: 'button', role: 'tab', 'aria-selected': t === tab, onclick: () => { tab = t; drawTabs(); drawList(); q.focus(); } }, t));
+    };
+    q.addEventListener('input', drawList);
+    q.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && q.dataset.first) { ev.preventDefault(); pick(q.dataset.first); }
+      if (ev.key === 'Escape') { ev.stopPropagation(); closeRefPop(); anchor.focus(); }
+    });
+    refPop = h('div', { class: 'ref-pop', role: 'dialog', 'aria-label': '값 고르기' }, q, tabs, list);
+    refPop.anchor = anchor;
+    refPop.onOutside = (ev) => { if (!refPop.contains(ev.target) && ev.target !== anchor && !anchor.contains(ev.target)) closeRefPop(); };
+    document.addEventListener('pointerdown', refPop.onOutside, true);
+    drawTabs(); drawList();
+    document.body.appendChild(refPop);
+    // 버튼 아래(아래 공간이 모자라면 위)에 띄운다
+    const r = anchor.getBoundingClientRect(), ph = refPop.offsetHeight, pw = refPop.offsetWidth;
+    refPop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - pw - 8))}px`;
+    refPop.style.top = `${r.bottom + 4 + ph > innerHeight - 8 ? Math.max(8, r.top - 4 - ph) : r.bottom + 4}px`;
+    q.focus();
   }
 
   function tablePicker(ref, onPick, bandOnly) {
@@ -700,7 +820,7 @@
       };
       ta.addEventListener('input', () => { commit(() => { c.text = ta.value; }); check(); });
       const merged = S.strategy.edges.filter(e => e.to === n.id).length >= 2;
-      const names = [...(merged ? [E.IN_NAME] : []), ...allNames(n.id)];
+      const names = [...(merged ? [E.IN_NAME] : []), ...allNames(n.id, n.id)];
       const ins = select([['', '이름 넣기…'], ...names.map(x => [x, x])], '', (v) => {
         if (!v) return;
         ta.setRangeText(`[${v}]`, ta.selectionStart, ta.selectionEnd, 'end');
@@ -742,7 +862,7 @@
         xBtn(() => commit(() => c.items.splice(i, 1), true), '항목 삭제'))));
       list.appendChild(btn('+ 비교 항목', () => commit(() => c.items.push(null), true)));
       return h('div', { class: 'editor' },
-        field('고르는 값', select([['min', '가장 작은 값 (MIN)'], ['max', '가장 큰 값 (MAX)']], c.mode || 'min', (v) => commit(() => { c.mode = v; }))),
+        field('고르는 값', select([['min', '가장 작은 값 (MIN)'], ['max', '가장 큰 값 (MAX)']], c.mode || 'min', (v) => { commit((m, st) => { const base = m.sfx && baseName(m); c.mode = v; if (m.sfx) resuffix(m, st, base); }); if (n.sfx) render(); })),
         field('비교 항목', list, '선택된 항목이 결정요인으로 기록됩니다'));
     },
 

@@ -8,8 +8,10 @@
    · 이어 둔 화살표를 끌면 끝점을 다른 도형·다른 자리로 옮긴다(빈 곳에 놓으면 취소). 선택하면 양 끝 손잡이가 나온다
    · 끄는 동안 도형 근처(SNAP)에 가면 그 도형을 강조하고 화살표 끝을 붙을 자리에 붙인다
    · 도형을 끌어 옮기고, 클릭하면 아래 설정 패널(panel.js)이 열린다. 고른 도형은 Delete 키로 지운다(예/아니오 확인)
+   · 빈 곳을 끌면 사각형에 걸친 도형을 묶고, 묶은 도형 하나를 끌면 함께 옮긴다
    · 위치가 없는 단계(예시 전략·가져온 파일)는 자동 배치한다
-   · 단계 추가는 왼쪽 패널의 단계 팔레트(유형 타일)에서 한다. 도형 안쪽은 머리줄(아이콘·이름) / 구분선 / 유형·값
+   · 단계 추가는 왼쪽 패널의 단계 팔레트(유형 타일)에서 한다 — 누르거나 캔버스로 끌어 놓는다. 새 단계는 고르기만 하고
+     설정 패널은 한 번 더 눌러야 열린다. 도형 안쪽은 머리줄(아이콘·이름) / 구분선 / 유형·값
    · 테스트 입력값을 바꾸면 지나간 화살표를 따라 빛이 한 번 흐르고, 값이 바뀐 도형은 반짝인다(애니메이션 줄이기면 끔)
    화살표는 "흐름(어느 경로를 탔는가)"이고, 계산에 쓰는 값은 설정 패널의 참조가 정한다.
    ========================================================================== */
@@ -18,11 +20,14 @@
   const E = root.LimitEngine, S = root.Store, D = root.Describe, { h, clear } = root.UI;
 
   const W = 232, H = 88, GX = 44, GY = 48, PAD = 40, GRID = 8, SNAP = 48;
+  const MORE_X = 480, MORE_Y = 360;   // 캔버스 오른쪽·아래 여유(도형을 더 놓을 자리)
   const ZOOM_KEY = 'limitsim.zoom';
   const SVGNS = 'http://www.w3.org/2000/svg';
+  const DND_TYPE = 'application/x-limitsim-node';   // 단계 팔레트에서 끌어 온 유형
 
   let host, scrollEl, sizer, stage, svg, zoomLabel, drawer, dot;
   let selectedNode = null, selectedEdge = null;
+  let group = new Set();  // 빈 곳을 끌어 묶은 도형들 — 그중 하나를 끌면 함께 옮긴다
   let zoom = 1;
   let result = null;
   let drag = null;       // {kind:'move'|'connect', ...}
@@ -201,6 +206,7 @@
       tool('i-plus', '단계 추가|왼쪽 단계 팔레트를 엽니다', () => { root.App.sideTab('palette', true); const q = document.getElementById('paletteSearch'); if (q) q.focus(); }),
       tool('i-undo', '되돌리기 (Ctrl+Z)|단계 추가·삭제·연결·이동·저장을 한 번씩 되돌립니다', () => root.App.undo()),
       tool('i-layout', '자동 정렬|흐름 순서대로 도형을 다시 놓습니다', autoLayout),
+      tool('i-wide', '넓게 보기|양쪽 패널을 한 번에 닫습니다. 다시 누르면 원래대로 엽니다', toggleWide),
       h('span', { class: 'tool-sep' }),
       tool('i-help', '처음 안내 다시 보기', () => root.Fx.startTour()));
     const zoombar = h('div', { class: 'float-tool float-bc' },
@@ -220,7 +226,20 @@
     sizer = h('div', { class: 'canvas-sizer' }, stage);
     scrollEl = h('div', { class: 'canvas-scroll' }, sizer);
     scrollEl.addEventListener('pointerdown', (ev) => {
-      if (ev.target === scrollEl || ev.target === sizer || ev.target === stage || ev.target === svg) select(null);
+      if (ev.target === scrollEl || ev.target === sizer || ev.target === stage || ev.target === svg) startMarquee(ev);
+    });
+    // 단계 팔레트의 타일을 끌어 놓으면 놓은 자리(도형 가운데)에 단계를 만든다
+    scrollEl.addEventListener('dragover', (ev) => {
+      if (!ev.dataTransfer.types.includes(DND_TYPE)) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'copy';
+    });
+    scrollEl.addEventListener('drop', (ev) => {
+      const t = ev.dataTransfer.getData(DND_TYPE);
+      if (!t || !E.NODE_TYPES[t]) return;
+      ev.preventDefault();
+      const p = toStage(ev);
+      addNode(t, { x: p.x - W / 2, y: p.y - H / 2 });
     });
 
     drawer = h('div', { class: 'drawer' });
@@ -238,11 +257,19 @@
     if (!box) return;
     const G = (root.Guide && root.Guide.GUIDE) || {};
     for (const [title, types] of PALETTE) {
-      const tiles = h('div', { class: 'tiles' }, types.map(t => h('button', {
-        class: 'tile', type: 'button', 'data-type': t,
-        'data-tip': `${E.NODE_TYPES[t]}|${(G[t] && G[t].summary) || ''}`,
-        onclick: () => root.App.showTab('process', () => addNode(t)),
-      }, chip(t), h('span', {}, E.NODE_TYPES[t]))));
+      // 누르면 보이는 자리에 추가, 캔버스로 끌어 놓으면 놓은 자리에 추가
+      const tiles = h('div', { class: 'tiles' }, types.map(t => {
+        const tile = h('button', {
+          class: 'tile', type: 'button', 'data-type': t, draggable: 'true',
+          'data-tip': `${E.NODE_TYPES[t]}|${(G[t] && G[t].summary) || ''} · 캔버스로 끌어 놓을 수 있습니다`,
+          onclick: () => root.App.showTab('process', () => addNode(t)),
+        }, chip(t), h('span', {}, E.NODE_TYPES[t]));
+        tile.addEventListener('dragstart', (ev) => {
+          ev.dataTransfer.effectAllowed = 'copy';
+          ev.dataTransfer.setData(DND_TYPE, t);
+        });
+        return tile;
+      }));
       const group = h('div', { class: 'tile-group' });
       const head = h('button', { class: 'group-head', type: 'button', 'aria-expanded': 'true',
         onclick: () => { const closed = group.classList.toggle('closed'); head.setAttribute('aria-expanded', !closed); } }, title, icon('i-chev'));
@@ -259,8 +286,9 @@
   function onChange(reason) {
     if (reason === 'saved' || reason === 'exported' || reason === 'canvas-move') return;
     pendingReason = reason;
-    if (['load', 'new', 'example', 'import'].includes(reason)) { selectedNode = null; selectedEdge = null; root.Panel.show(null); lastVals = null; }
+    if (['load', 'new', 'example', 'import'].includes(reason)) { selectedNode = null; selectedEdge = null; group.clear(); root.Panel.show(null); lastVals = null; }
     if (selectedNode && !S.strategy.nodes.some(n => n.id === selectedNode)) { selectedNode = null; root.Panel.show(null); }
+    for (const id of group) if (!S.strategy.nodes.some(n => n.id === id)) group.delete(id);
     render();
   }
 
@@ -274,15 +302,8 @@
     }
     try { result = E.evaluate(s, S.evalInputs()); } catch (e) { result = { steps: {}, finalNodeId: null }; }
 
-    const maxX = Math.max(600, ...s.nodes.map(n => n.x + W)) + PAD * 2;
-    const maxY = Math.max(400, ...s.nodes.map(n => n.y + H)) + PAD * 3;
-    stage.style.width = `${maxX}px`;
-    stage.style.height = `${maxY}px`;
     stage.style.transform = `scale(${zoom})`;
-    sizer.style.width = `${maxX * zoom}px`;
-    sizer.style.height = `${maxY * zoom}px`;
-    svg.setAttribute('width', maxX);
-    svg.setAttribute('height', maxY);
+    fitStage(s.nodes);
     zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
 
     for (const el of [...stage.querySelectorAll('.node, .edge-del, .node-empty, .path-menu')]) el.remove();
@@ -292,6 +313,39 @@
     for (const n of s.nodes) stage.appendChild(nodeEl(n));
     drawEdges();
     playEffects();
+  }
+
+  // 캔버스 크기: 도형이 놓인 범위 + 오른쪽·아래 여유(MORE_X·MORE_Y). 끄는 중에도 불러 끝까지 넓힌다.
+  // 위·왼쪽은 놓을 때 전체를 밀어 넓힌다(normalize)
+  // 지금 보이는 범위(스크롤 위치 + 화면)보다는 줄이지 않는다 — 줄이면 스크롤이 튄다
+  function fitStage(nodes, more) {
+    more = more || { x: 0, y: 0 };
+    const maxX = Math.max((scrollEl.scrollLeft + scrollEl.clientWidth) / zoom + more.x, ...nodes.map(n => n.x + W + MORE_X));
+    const maxY = Math.max((scrollEl.scrollTop + scrollEl.clientHeight) / zoom + more.y, ...nodes.map(n => n.y + H + MORE_Y));
+    stage.style.width = `${maxX}px`;
+    stage.style.height = `${maxY}px`;
+    sizer.style.width = `${maxX * zoom}px`;
+    sizer.style.height = `${maxY * zoom}px`;
+    svg.setAttribute('width', maxX);
+    svg.setAttribute('height', maxY);
+  }
+
+  // 위·왼쪽 끝을 넘겨 놓은 도형이 있으면 전체를 오른쪽·아래로 밀어 PAD만큼 띄운다. 민 만큼(x, y)을 돌려준다
+  function normalize(st) {
+    if (!st.nodes.length) return { x: 0, y: 0 };
+    const dx = Math.max(0, PAD - Math.min(...st.nodes.map(n => n.x)));
+    const dy = Math.max(0, PAD - Math.min(...st.nodes.map(n => n.y)));
+    if (dx || dy) for (const n of st.nodes) { n.x += dx; n.y += dy; }
+    return { x: dx, y: dy };
+  }
+
+  // 끄는 중 포인터가 캔버스 가장자리에 가면 그쪽으로 화면을 민다
+  function edgeScroll(ev) {
+    const r = scrollEl.getBoundingClientRect(), E_ = 40, STEP = 18;
+    if (ev.clientX < r.left + E_) scrollEl.scrollLeft -= STEP;
+    else if (ev.clientX > r.left + scrollEl.clientWidth - E_) scrollEl.scrollLeft += STEP;
+    if (ev.clientY < r.top + E_) scrollEl.scrollTop -= STEP;
+    else if (ev.clientY > r.top + scrollEl.clientHeight - E_) scrollEl.scrollTop += STEP;
   }
 
   // ── 움직임: 값이 바뀐 도형 반짝임 · 계산 흐름 빛 · 컷오프 흔들림 · 새 도형 등장 ──
@@ -376,7 +430,7 @@
     const st = result.steps[n.id] || {};
     const isFinal = n.id === result.finalNodeId;
     const cls = ['node', `node-${n.type}`,
-      n.id === selectedNode ? 'selected' : '',
+      n.id === selectedNode ? 'selected' : '', group.has(n.id) ? 'grouped' : '',
       st.skipped ? 'skipped' : !st.active ? 'inactive' : '',
       st.error ? 'error' : '', isFinal ? 'final' : '',
       (st.triggered || st.chosen) ? 'marked' : ''].join(' ');
@@ -490,17 +544,27 @@
     if (ev.button !== 0 || ev.target.closest('.port, .edge-zone')) return;
     ev.preventDefault();
     const p = toStage(ev);
-    drag = { kind: 'move', id: n.id, dx: p.x - n.x, dy: p.y - n.y, moved: false, el, x: n.x, y: n.y, ox: n.x, oy: n.y };
+    // 묶은 도형 중 하나를 끌면 묶음 전체를 같은 만큼 옮긴다(화살표는 도형 위치를 따라 다시 그린다)
+    const movers = (group.has(n.id) ? S.strategy.nodes.filter(m => group.has(m.id)) : [n])
+      .map(m => ({ m, ox: m.x, oy: m.y, el: stage.querySelector(`.node[data-id="${m.id}"]`) }));
+    const minX = Math.min(...movers.map(v => v.ox)), minY = Math.min(...movers.map(v => v.oy));
+    const ox = n.x, oy = n.y;
+    drag = { kind: 'move', dx: p.x - n.x, dy: p.y - n.y, moved: false, ddx: 0, ddy: 0 };
     capture(el, ev);
     el.onpointermove = (e2) => {
+      edgeScroll(e2);
       const q = toStage(e2);
-      const nx = Math.max(0, Math.round((q.x - drag.dx) / GRID) * GRID);
-      const ny = Math.max(0, Math.round((q.y - drag.dy) / GRID) * GRID);
-      if (!drag.moved && Math.abs(nx - n.x) < 4 && Math.abs(ny - n.y) < 4) return;
+      // 끄는 도형은 격자에 맞춘다. 위·왼쪽 끝은 여유(MORE_X·MORE_Y)만큼 넘길 수 있다 — 놓으면 캔버스가 그쪽으로 넓어진다
+      const ddx = Math.max(-minX - MORE_X, Math.round((q.x - drag.dx) / GRID) * GRID - ox);
+      const ddy = Math.max(-minY - MORE_Y, Math.round((q.y - drag.dy) / GRID) * GRID - oy);
+      if (!drag.moved && Math.abs(ddx) < 4 && Math.abs(ddy) < 4) return;
       drag.moved = true;
-      drag.x = nx; drag.y = ny;
-      el.style.left = `${nx}px`; el.style.top = `${ny}px`;
-      n.x = nx; n.y = ny;          // 화살표를 따라 그리기 위해 임시 반영(놓을 때 저장)
+      drag.ddx = ddx; drag.ddy = ddy;
+      for (const v of movers) {
+        v.m.x = v.ox + ddx; v.m.y = v.oy + ddy;   // 화살표를 따라 그리기 위해 임시 반영(놓을 때 저장)
+        if (v.el) { v.el.style.left = `${v.m.x}px`; v.el.style.top = `${v.m.y}px`; }
+      }
+      fitStage(S.strategy.nodes);   // 오른쪽·아래로 끌면 캔버스가 따라 넓어진다
       drawEdges();
     };
     el.onpointerup = () => {
@@ -508,10 +572,57 @@
       const d = drag; drag = null;
       if (d.moved) {
         // 끄는 동안 임시로 옮긴 위치를 원래대로 돌린 뒤 저장해야 되돌리기 기록에 이동 전 위치가 남는다
-        n.x = d.ox; n.y = d.oy;
-        S.update(st => { const m = st.nodes.find(x => x.id === d.id); m.x = d.x; m.y = d.y; }, 'canvas-move');
+        for (const v of movers) { v.m.x = v.ox; v.m.y = v.oy; }
+        let shift = { x: 0, y: 0 };
+        S.update(st => {
+          for (const v of movers) { const m = st.nodes.find(x => x.id === v.m.id); m.x = v.ox + d.ddx; m.y = v.oy + d.ddy; }
+          shift = normalize(st);
+        }, 'canvas-move');
+        // 위·왼쪽으로 넓혔으면 전체를 민 만큼 화면도 옮겨 보이는 자리를 그대로 둔다
+        if (shift.x || shift.y) {
+          render();
+          fitStage(S.strategy.nodes, shift);   // 민 만큼 스크롤할 자리를 먼저 만든다
+          scrollEl.scrollLeft += shift.x * zoom;
+          scrollEl.scrollTop += shift.y * zoom;
+        } else fitStage(S.strategy.nodes);
       }
       else select(n.id);
+    };
+  }
+
+  // 빈 곳을 끌면 사각형 안에 걸친 도형을 묶는다. 끌지 않고 떼면 선택 해제
+  function startMarquee(ev) {
+    if (ev.button !== 0) return;
+    // 스크롤 막대를 누른 경우는 그대로 둔다
+    const r = scrollEl.getBoundingClientRect();
+    if (ev.clientX >= r.left + scrollEl.clientLeft + scrollEl.clientWidth || ev.clientY >= r.top + scrollEl.clientTop + scrollEl.clientHeight) return;
+    ev.preventDefault();
+    const a = toStage(ev);
+    const box = h('div', { class: 'marquee', hidden: true });
+    stage.appendChild(box);
+    let moved = false;
+    const hits = (b) => S.strategy.nodes.filter(n => n.x < b.x2 && n.x + W > b.x1 && n.y < b.y2 && n.y + H > b.y1);
+    capture(scrollEl, ev);
+    scrollEl.onpointermove = (e2) => {
+      const q = toStage(e2);
+      if (!moved && Math.hypot(q.x - a.x, q.y - a.y) * zoom < 5) return;
+      moved = true;
+      const b = { x1: Math.min(a.x, q.x), y1: Math.min(a.y, q.y), x2: Math.max(a.x, q.x), y2: Math.max(a.y, q.y) };
+      box.hidden = false;
+      Object.assign(box.style, { left: `${b.x1}px`, top: `${b.y1}px`, width: `${b.x2 - b.x1}px`, height: `${b.y2 - b.y1}px` });
+      const ids = new Set(hits(b).map(n => n.id));
+      stage.querySelectorAll('.node').forEach(el => el.classList.toggle('grouped', ids.has(el.dataset.id)));
+    };
+    scrollEl.onpointerup = scrollEl.onpointercancel = (e2) => {
+      scrollEl.onpointermove = scrollEl.onpointerup = scrollEl.onpointercancel = null;
+      box.remove();
+      if (!moved) { select(null); return; }
+      const q = toStage(e2);
+      const ids = hits({ x1: Math.min(a.x, q.x), y1: Math.min(a.y, q.y), x2: Math.max(a.x, q.x), y2: Math.max(a.y, q.y) }).map(n => n.id);
+      select(null);
+      group = new Set(ids);
+      render();
+      if (ids.length) root.App.flash(`단계 ${ids.length}개를 묶었습니다 — 그중 하나를 끌면 함께 옮겨집니다`, 'info');
     };
   }
 
@@ -713,10 +824,12 @@
     yes.focus();
   }
 
-  function select(id) {
+  // noPanel: 고르기만 하고 설정 팝업은 열지 않는다(새로 넣은 단계 — 한 번 더 누르면 열린다)
+  function select(id, noPanel) {
     selectedEdge = null;
     selectedNode = id;
-    root.Panel.show(id);
+    group.clear();
+    root.Panel.show(noPanel ? null : id);
     render();
     if (id) {
       const el = stage.querySelector(`.node[data-id="${id}"]`);
@@ -734,20 +847,28 @@
     }
   }
 
-  function addNode(type) {
+  // at: 팔레트에서 끌어 놓은 자리(도형 왼쪽 위). 놓은 자리에 그대로 두고 화살표는 잇지 않는다
+  function addNode(type, at) {
     const s = S.strategy;
     const id = E.newId('n');
-    const sel = s.nodes.find(n => n.id === selectedNode);
+    const sel = at ? null : s.nodes.find(n => n.id === selectedNode);
     let x, y;
-    if (sel) { x = sel.x; y = sel.y + H + GY; }
+    if (at) { x = Math.max(0, Math.round(at.x / GRID) * GRID); y = Math.max(0, Math.round(at.y / GRID) * GRID); }
+    else if (sel) { x = sel.x; y = sel.y + H + GY; }
     else {
-      x = Math.round((scrollEl.scrollLeft / zoom + PAD) / GRID) * GRID;
-      y = Math.round((scrollEl.scrollTop / zoom + PAD) / GRID) * GRID;
+      // 보이는 화면 가운데 — 설정 팝업이 덮은 아래쪽은 뺀다(왼쪽 위 떠 있는 도구와 겹치지 않게)
+      const covered = drawer.classList.contains('open') ? drawer.offsetHeight : 0;
+      const cx = (scrollEl.scrollLeft + scrollEl.clientWidth / 2) / zoom - W / 2;
+      const cy = (scrollEl.scrollTop + Math.max(H * zoom, scrollEl.clientHeight - covered) / 2) / zoom - H / 2;
+      x = Math.max(0, Math.round(cx / GRID) * GRID);
+      y = Math.max(0, Math.round(cy / GRID) * GRID);
     }
-    // 겹치면 아래로 내린다
-    while (s.nodes.some(n => Math.abs(n.x - x) < W && Math.abs(n.y - y) < H)) y += H + GY;
+    // 겹치면 아래로 내린다(끌어 놓은 자리는 그대로)
+    if (!at) while (s.nodes.some(n => Math.abs(n.x - x) < W && Math.abs(n.y - y) < H)) y += H + GY;
     S.update(st => {
-      st.nodes.push({ id, name: S.uniqueName(E.NODE_TYPES[type]), type, config: defaultConfig(type), format: type === 'pva' ? 'money' : 'number', x, y });
+      // 새 단계는 이름 뒤에 구분값을 붙인다(sfx) — 이름 칸에는 앞부분만 쓴다
+      const config = defaultConfig(type);
+      st.nodes.push({ id, name: S.suffixedName('새 단계', E.nodeSuffix({ type, config }), id), sfx: true, type, config, format: type === 'pva' ? 'money' : 'number', x, y });
       if (sel) {
         const used = new Set(st.edges.filter(e => e.from === sel.id).map(e => e.label));
         const label = sel.type === 'branch' ? (ports(sel).find(l => !used.has(l)) || ports(sel)[0]) : null;
@@ -755,7 +876,16 @@
       }
     }, 'canvas-add');
     born = id;
-    select(id);
+    select(id, true);
+  }
+
+  // 넓게 보기: 열린 패널을 기억해 두고 양쪽을 닫는다. 둘 다 닫혀 있으면 기억한 대로(없으면 양쪽) 연다
+  let wideBack = null;
+  function toggleWide() {
+    const L = document.getElementById('layout');
+    const open = { menu: L.classList.contains('menu-open'), results: L.classList.contains('results-open') };
+    if (open.menu || open.results) { wideBack = open; root.App.setPanel('menu', false); root.App.setPanel('results', false); }
+    else { const b = wideBack || { menu: true, results: true }; wideBack = null; root.App.setPanel('menu', b.menu); root.App.setPanel('results', b.results); }
   }
 
   function autoLayout() { S.update(st => layout(st, false), 'canvas-layout'); render(); }

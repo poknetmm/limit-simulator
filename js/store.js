@@ -169,9 +169,14 @@
     for (let i = 2; ; i++) if (!used.has(`${base} ${i}`)) return `${base} ${i}`;
   }
 
+  // 구분값을 붙인 단계 이름(앞부분_구분값). 겹치면 앞부분에 번호를 붙인다(예: 새 단계 2_표). base는 검사한 값만 넘긴다
+  function suffixedName(base, sfx, selfId) {
+    for (let i = 1; ; i++) { const n = `${base}${i > 1 ? ` ${i}` : ''}_${sfx}`; if (!nameProblem(n, selfId)) return n; }
+  }
+
   root.Store = {
     state, load, update, undo, evalInputs, setView, markCloudSaved, unlinkCloud, restoreDraft, newStrategy, openExample, exportJson, importJson,
-    nameProblem, uniqueName, clone, hasUnexported,
+    nameProblem, uniqueName, suffixedName, clone, hasUnexported,
     get strategy() { return state.strategy; },
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
   };

@@ -39,6 +39,11 @@
     branch:      '분기',
   };
 
+  // 단계 이름 뒤에 붙는 구분값(이름 = 앞부분_구분값). 구분값을 쓰는 단계(sfx: true — 새로 만든 단계)에만 적용하고,
+  // 변수·표 이름과 겹치지 않게 한다. 최소·최대는 고르는 값에 따라 최소/최대
+  const NODE_SUFFIX = { pva: 'PVA', arith: '계산', formula: '수식', lookup: '표', progressive: '누진', cond: '조건', branch: '분기', cutoff: '컷오프' };
+  const nodeSuffix = (n) => (n.type === 'minmax' ? (n.config && n.config.mode === 'max' ? '최대' : '최소') : NODE_SUFFIX[n.type] || '단계');
+
   const IN_NAME = '지나온 경로의 값';
 
   // 기초한도(PVA) — 줄 단위 식. 줄마다 이름 + 사칙연산 조각(값·앞 줄·현가계수·연산 기호), 마지막 줄 = 기초한도.
@@ -1290,7 +1295,7 @@
   }
 
   return {
-    SCHEMA, NODE_TYPES, VAR_TYPES, CMP_OPS, IN_NAME, PVF_NAME, PVA_SLOTS, DEBT_PARTS, DEBT_MORT, PART_SEP, CalcError,
+    SCHEMA, NODE_TYPES, nodeSuffix, VAR_TYPES, CMP_OPS, IN_NAME, PVF_NAME, PVA_SLOTS, DEBT_PARTS, DEBT_MORT, PART_SEP, CalcError,
     pvaDefaultLines, rateTokens, refToken, partsOf, monthlyPayment, debtAggregate, inputColumns, autoMap, parseInputCell, rowInputs,
     prepare, evaluate, validate, order, index, findReferences, renameInFormulas, finalNodeId, migrate,
     tokenize, parseTokens, evalAst, LANGS, parseFormula, formulaNames, lookupTable, progressiveSum, axisKeyLabel, isCellFormula,
