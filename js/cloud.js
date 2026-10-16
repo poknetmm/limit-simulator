@@ -50,7 +50,20 @@
     renderUser();
     renderMenu();
     renderBadge($('#cloudState'));
+    if (!on && root.Chat) root.Chat.reset();   // 로그아웃하면 전략 의논 대화도 사라진다
     if (!on) setTimeout(() => $('#loginEmail').focus(), 0);
+  }
+
+  // 전략 의논(chat.js)이 중계 함수를 부른다 — 로그인 토큰과 공개용 키를 함께 보낸다. 응답(Response)을 그대로 돌려준다
+  async function callFunction(name, body) {
+    const { data } = await client.auth.getSession();
+    const token = data.session && data.session.access_token;
+    if (!token) throw new Error('로그인이 만료되었습니다 — 다시 로그인하세요');
+    return fetch(`${URL_}/functions/v1/${name}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, apikey: KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
   }
 
   const mine = (c) => !!(c && user && c.owner_id === user.id);
@@ -398,5 +411,5 @@
     });
   }
 
-  root.Cloud = { mount, renderBadge, canSave, save, saveAs, pickStrategy, get user() { return user; } };
+  root.Cloud = { mount, renderBadge, canSave, save, saveAs, pickStrategy, callFunction, get user() { return user; } };
 })(typeof self !== 'undefined' ? self : this);

@@ -130,10 +130,28 @@
     <section id="tab-compare" class="tabpanel" role="tabpanel" hidden></section>
   </main>
 
-  <aside id="results" class="results" aria-label="단일 시뮬레이션">
+  <aside id="results" class="results" aria-label="단일 시뮬레이션·전략 의논">
    <div class="results-inner">
-    <div class="results-head">단일 시뮬레이션</div>
-    <div class="results-body">
+    <div class="results-head res-tabs" role="tablist">
+      <button class="res-tab active" type="button" role="tab" data-pane="sim" aria-selected="true">단일 시뮬레이션</button>
+      <button class="res-tab" type="button" role="tab" data-pane="chat" aria-selected="false">전략 의논</button>
+    </div>
+    <!-- 전략 의논(js/chat.js) — 대화는 이 탭에만 있고 서버에는 사용량 숫자만 남는다 -->
+    <div id="resPaneChat" class="chat-pane" hidden>
+      <div class="chat-warn">가상 데이터 전용 — 실고객 정보 입력 금지</div>
+      <div id="chatLog" class="chat-log" aria-live="polite"></div>
+      <form id="chatForm" class="chat-form">
+        <label class="sr-only" for="chatInput">질문</label>
+        <textarea id="chatInput" class="chat-input" rows="3" maxlength="4000" placeholder="지금 전략에 대해 물어보세요 (Enter 보내기 · Shift+Enter 줄바꿈)"></textarea>
+        <div id="chatError" class="field-error" role="alert"></div>
+        <div class="chat-actions">
+          <button id="chatNew" class="btn btn-small" type="button">새 대화</button>
+          <button id="chatSend" class="btn btn-small btn-primary" type="submit">보내기</button>
+        </div>
+        <div id="chatLeft" class="muted small"></div>
+      </form>
+    </div>
+    <div id="resPaneSim" class="results-body">
      <div class="final-card">
       <div id="finalCard" class="final-txt"></div>
       <span id="buddy" data-mascot="wave"></span>
@@ -183,6 +201,7 @@
 <!-- 로그인·전략 서버 저장: supabase-js 2.117.2 (MIT, lib/LICENSE-supabase.txt) -->
 <script src="lib/supabase.js"></script>
 <script src="js/cloud.js"></script>
+<script src="js/chat.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

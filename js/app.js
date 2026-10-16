@@ -330,6 +330,7 @@
     root.Canvas.mount($('#tab-process'));
     root.Bulk.mount($('#tab-bulk'), $('#tab-compare'));
     root.Cloud.mount(guard);
+    root.Chat.mount();
     S.subscribe((reason) => {
       renderTopbar();
       if (reason === 'saved' || reason === 'exported' || reason === 'canvas-move') return;
