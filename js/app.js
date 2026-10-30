@@ -79,6 +79,80 @@
     name.select();
   }
 
+  // AI 검토용 내보내기: 지금 전략을 ChatGPT 검토 도우미에 넘길 글(형식 v1, js/aiexport.js)로 만든다.
+  // 열린 전략·예시 고객 전부·"현재 화면 입력"의 계산값만 싣고 전략 JSON은 붙이지 않는다. 복사하거나 .md로 내려받는다
+  function aiExportDialog() {
+    const A = root.AiExport, s = S.strategy, cloud = S.state.cloud;
+    const round = h('input', { type: 'number', class: 'login-input', min: '1', max: '99', step: '1', value: '1', 'aria-label': '검토 회차' });
+    const memo = h('textarea', { class: 'chat-input', rows: '3', maxlength: '2000', 'aria-label': '이번 회차 변경 메모' });
+    const question = h('input', { type: 'text', class: 'login-input', maxlength: '200', placeholder: '(선택) 특히 봐 주었으면 하는 점 한 줄', 'aria-label': '질문 한 줄' });
+    const preview = h('textarea', { class: 'chat-input ai-preview', rows: '14', readonly: true, wrap: 'off', 'aria-label': '내보낼 글 미리보기' });
+    const err = h('div', { class: 'field-error', role: 'alert' });
+    const copyBtn = h('button', { class: 'btn btn-primary', type: 'button' }, '클립보드에 복사');
+    const dlBtn = h('button', { class: 'btn', type: 'button' }, '.md 파일로 내려받기');
+    const issues = E.validate(s);
+    const teamOwned = !!(cloud && root.Cloud && root.Cloud.user && cloud.owner_id !== root.Cloud.user.id);
+
+    // 입력칸 → 글. 만들 수 없으면(회차 오류·개인정보 형식·생성 실패) 이유를 보이고 두 버튼을 막는다. 성공하면 글을 돌려준다
+    function make() {
+      const r = Number(round.value);
+      let problem = null, text = '';
+      if (!Number.isInteger(r) || r < 1) problem = '검토 회차는 1 이상의 정수로 입력하세요';
+      memo.disabled = !(Number.isInteger(r) && r >= 2);
+      if (!problem) {
+        const typed = `${r >= 2 ? memo.value : ''}\n${question.value}`;
+        const kind = A.personalInfo(typed);
+        if (kind) problem = `${kind} 형식의 글이 들어 있습니다 — 고객 정보는 입력하지 마세요`;
+      }
+      if (!problem) {
+        try { text = A.build(s, { round: r, memo: memo.value, question: question.value, serverVer: cloud ? cloud.version : '', time: A.timeText() }); }
+        catch (e) { problem = `글을 만들지 못했습니다: ${e.message}`; }
+      }
+      err.textContent = problem || '';
+      copyBtn.disabled = dlBtn.disabled = !!problem;
+      preview.value = problem ? '' : text;
+      return problem ? null : { text, round: r };
+    }
+    memo.placeholder = '2회차부터: 앞 회차의 재시뮬레이션 요청 중 반영한 것과 반영하지 않은 것(사유)을 적으세요';
+    [round, memo, question].forEach(el => el.addEventListener('input', make));
+
+    copyBtn.addEventListener('click', async () => {
+      const made = make();   // 내보낸 시각이 이 순간이 되도록 다시 만든다
+      if (!made) return;
+      let ok = false;
+      try { await navigator.clipboard.writeText(made.text); ok = true; }
+      catch (e) { preview.focus(); preview.select(); try { ok = document.execCommand('copy'); } catch (e2) { ok = false; } }
+      if (ok) flash('복사했습니다 — 검토 도우미 대화창에 붙여 넣으세요', 'ok');
+      else err.textContent = '복사하지 못했습니다 — 미리보기를 직접 선택해 복사하거나 .md 파일로 내려받으세요';
+    });
+    dlBtn.addEventListener('click', () => {
+      const made = make();
+      if (!made) return;
+      const a = document.createElement('a');
+      const name = A.fileName(s, made.round);
+      a.href = URL.createObjectURL(new Blob([made.text], { type: 'text/markdown;charset=utf-8' }));
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      flash(`"${name}"을(를) 내려받았습니다 — 검토 도우미 대화창에 올리세요`, 'ok');
+    });
+
+    const form = h('form', { class: 'login-form ai-export-form', onsubmit: (ev) => ev.preventDefault() },
+      h('div', { class: 'hint' }, 'ChatGPT 검토 도우미에 넘길 글을 만듭니다. 지금 열린 전략과 예시 고객 전부, 현재 화면 입력의 계산 결과를 싣습니다(전략 원본 JSON·대량 시뮬레이션 결과는 싣지 않습니다). 가상 데이터 전용 — 고객 정보를 적지 마세요.'),
+      teamOwned ? h('div', { class: 'hint' }, '팀원이 작성한 전략입니다. 작성자 동의 없이 내보내지 마세요.') : null,
+      issues.length ? h('div', { class: 'hint' }, `확인 필요 항목 ${issues.length}건이 있는 전략입니다. 오류가 난 단계는 "오류"로 실립니다.`) : null,
+      h('div', { class: 'saveas-field' }, h('span', { class: 'muted small' }, '검토 회차'), round),
+      h('div', { class: 'saveas-field' }, h('span', { class: 'muted small' }, '변경 메모'), memo),
+      h('div', { class: 'saveas-field' }, h('span', { class: 'muted small' }, '질문 한 줄'), question),
+      err, preview,
+      h('div', { class: 'row-actions' }, copyBtn, dlBtn));
+    root.UI.modal('AI 검토용 내보내기', form, true);
+    make();
+    round.select();
+  }
+
   function pickFile() {
     const input = $('#importFile');
     input.value = '';
@@ -317,6 +391,7 @@
     $('#menuImport').addEventListener('click', () => guard(pickFile, '파일 가져오기'));
     $('#menuExport').addEventListener('click', () => exportDialog());
     $('#menuXlsx').addEventListener('click', downloadXlsx);
+    $('#menuAi').addEventListener('click', aiExportDialog);
     $('#topExport').addEventListener('click', () => exportDialog());
     $('#topSave').addEventListener('click', () => { if (root.Cloud.user) root.Cloud.save(); else flash('로그인한 뒤 서버에 저장할 수 있습니다', 'info'); });
 
