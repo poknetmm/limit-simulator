@@ -746,8 +746,11 @@
   }
 
   // inputs: {변수id: 값} — 고객 입력값을 덮어쓴다(대량 시뮬레이션은 행마다 이것만 바꾼다)
-  function evaluate(strategy, inputs, prep) {
+  // opt.trace(기본 꺼짐): 켜면 단계마다 실제로 읽은 참조와 값(step.reads = [{name, value, fmt}]), 조건·분기의 판정,
+  //   표 조회에서 찾은 칸을 step에 남긴다. 간이 한도 산출기가 "비고"를 만드는 데 쓴다. 끈 상태의 계산·결과는 그대로다
+  function evaluate(strategy, inputs, prep, opt) {
     inputs = inputs || {};
+    const trace = !!(opt && opt.trace);
     if (!prep || prep.strategy !== strategy) prep = prepare(strategy);
     const { idx, ord, cycle, deps, asts, incoming } = prep;
     const steps = {};
@@ -775,14 +778,14 @@
       return raw;
     };
 
-    const resolve = (ref) => {
+    const resolveBase = (ref) => {
       if (!ref) throw new CalcError('참조가 비어 있습니다');
       if (ref.k === 'num' || ref.k === 'str') return ref.v;
       if (ref.k === 'in' || (ref.k === 'name' && ref.v === IN_NAME)) return incomingValue();
       if (ref.k === 'name') {
         const r = idx.byName.get(ref.v);
         if (!r) throw new CalcError(`[${ref.v}]라는 변수나 단계가 없습니다`);
-        return resolve(r);
+        return resolveBase(r);
       }
       if (ref.k === 'var') {
         const v = idx.vars.get(ref.id);
@@ -809,6 +812,28 @@
         return s.parts[ref.part];
       }
       throw new CalcError('알 수 없는 참조입니다');
+    };
+
+    // 기록 옵션: 읽은 참조의 이름·값·표시 형식(금액·비율·예/아니오)을 지금 계산 중인 단계에 남긴다(같은 이름은 한 번)
+    const readInfo = (ref) => {
+      if (ref.k === 'in' || (ref.k === 'name' && ref.v === IN_NAME)) return { name: IN_NAME, fmt: '' };
+      if (ref.k === 'name') { const r = idx.byName.get(ref.v); return r ? readInfo(r) : { name: ref.v, fmt: '' }; }
+      if (ref.k === 'var') { const v = idx.vars.get(ref.id) || {}; return { name: v.name, fmt: v.type === 'money' || v.type === 'percent' || v.type === 'bool' ? v.type : '' }; }
+      if (ref.k === 'part') {
+        const x = idx.vars.get(ref.id) || idx.nodes.get(ref.id) || {};
+        const p = partsOf(x).find(q => q[0] === ref.part);
+        return { name: `${x.name}${PART_SEP}${p ? p[1] : ref.part}`, fmt: p && p[2] === 'money' ? 'money' : '' };
+      }
+      const n = idx.nodes.get(ref.id) || {};
+      return { name: n.name, fmt: n.format === 'money' || n.format === 'percent' ? n.format : '' };
+    };
+    const resolve = !trace ? resolveBase : (ref) => {
+      const val = resolveBase(ref);
+      if (current && ref && ref.k !== 'num' && ref.k !== 'str') {
+        const info = readInfo(ref), reads = current.step.reads || (current.step.reads = []);
+        if (!reads.some(x => x.name === info.name)) reads.push({ name: info.name, value: val, fmt: info.fmt });
+      }
+      return val;
     };
 
     // 부채표 합계는 이번 계산에서 한 번만 구한다. 잔액은 고객 입력값 — 대량 시뮬레이션은 inputs[부채표 id]에 행 순서대로 잔액 배열을 넘긴다
@@ -908,6 +933,7 @@
             step.rate = rate;
             const r = rate / 12, m = num(resolve(c.months), '현가계수 기간');
             factor = r === 0 ? m : (1 - Math.pow(1 + r, -m)) / r;
+            if (trace) step.months = m;
           }
           const vals = {};
           const local = (ref) => {
@@ -945,13 +971,17 @@
         case 'lookup': {
           const tv = idx.vars.get(c.table && c.table.id);
           if (!tv || tv.type !== 'table') throw new CalcError('조회할 표를 고르세요');
-          step.value = lookupTable(tv, resolve(c.row), tv.cols ? resolve(c.col) : null, resolve);
+          const rowKey = resolve(c.row), colKey = tv.cols ? resolve(c.col) : null;
+          step.value = lookupTable(tv, rowKey, colKey, resolve);
+          if (trace) step.look = { rowKey, colKey, r: axisIndex(tv.rows, rowKey), c: tv.cols ? axisIndex(tv.cols, colKey) : 0 };
           break;
         }
         case 'progressive': {
           const tv = idx.vars.get(c.table && c.table.id);
           if (!tv || tv.type !== 'table') throw new CalcError('누진 합산할 구간표를 고르세요');
-          step.value = progressiveSum(tv, num(resolve(c.base), refName(c.base)), resolve);
+          const base = num(resolve(c.base), refName(c.base));
+          step.value = progressiveSum(tv, base, resolve);
+          if (trace) step.look = { base };
           break;
         }
         case 'minmax': {
@@ -961,11 +991,17 @@
           let best = 0;
           for (let i = 1; i < vals.length; i++) if (c.mode === 'max' ? vals[i] > vals[best] : vals[i] < vals[best]) best = i;
           step.value = vals[best];
+          if (trace) step.best = best;
           step.chosen = refName(items[best]);
           step.candidates = items.map((r, i) => ({ name: refName(r), value: vals[i] }));
           break;
         }
-        case 'cond': step.value = evalGroup(c.when, resolve) ? resolve(c.then) : resolve(c.else); break;
+        case 'cond': {
+          const hit = evalGroup(c.when, resolve);
+          if (trace) step.hit = hit;
+          step.value = hit ? resolve(c.then) : resolve(c.else);
+          break;
+        }
         case 'cutoff': {
           const hit = evalGroup(c.when, resolve);
           step.triggered = hit;
@@ -977,6 +1013,7 @@
         case 'branch': {
           const hitCase = (c.cases || []).find(k => evalGroup(k.when, resolve));
           step.value = hitCase ? hitCase.label : (c.elseLabel || '그 외');
+          if (trace) step.picked = hitCase ? c.cases.indexOf(hitCase) : -1;
           break;
         }
         default: throw new CalcError(`알 수 없는 계산 유형: ${node.type}`);

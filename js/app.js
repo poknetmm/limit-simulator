@@ -153,6 +153,45 @@
     round.select();
   }
 
+  // 간이 한도 산출기·대량 분석기(HTML) 내려받기: 지금 열린 전략(저장하지 않은 변경 포함)을 넣은 단독 HTML 파일을 만든다(js/htmlexport.js).
+  // 부품(엔진·설명·화면 스크립트·CSS)은 같은 사이트의 원본 파일을 읽어 넣는다 — 스튜디오와 같은 엔진이라 결과가 같다.
+  // 전략은 누른 순간의 복사본이고, "이 건 보기" 중이어도 전략에 저장된 테스트 입력값이 처음 값이 된다
+  let htmlBusy = false;
+  async function downloadHtml(kind) {
+    if (htmlBusy) return;
+    const H = root.HtmlExport, s = S.strategy, cloud = S.state.cloud;
+    const issues = E.validate(s);
+    if (issues.length) { flash(`확인 필요 항목 ${issues.length}건이 있어 파일을 만들지 않았습니다 — ${issues[0]}`, 'danger'); return; }
+    if (root.location.protocol === 'file:') { flash('파일로 연 화면에서는 부품 파일을 읽을 수 없습니다 — 로컬 서버 주소로 열어 주세요', 'danger'); return; }
+    const snap = JSON.parse(JSON.stringify(s));
+    const serverVer = cloud ? cloud.version : '';
+    const teamOwned = !!(cloud && root.Cloud && root.Cloud.user && cloud.owner_id !== root.Cloud.user.id);
+    htmlBusy = true;
+    try {
+      const parts = await H.loadParts(kind, async (p) => {
+        const res = await fetch(new URL(p, document.baseURI), { cache: 'no-cache' });
+        if (!res.ok) throw new Error(`${p} 읽기 실패(${res.status})`);
+        return res.text();
+      });
+      const date = new Date();
+      const html = await H.build(kind, snap, parts, { date, serverVer });
+      const name = H.fileName(kind, snap, date);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      const use = kind === 'analyzer' ? '엑셀 데이터를 올리거나 붙여 넣어 분석해 보세요' : '입력값을 바꿔 보세요';
+      flash(`"${name}"을(를) 내려받았습니다 — 회사 PC 크롬·엣지에서 열어 ${use}${teamOwned ? ' (팀원이 작성한 전략입니다. 작성자 동의 없이 공유하지 마세요)' : ''}`, 'ok');
+    } catch (e) {
+      flash(e instanceof H.HtmlExportError ? e.message : `파일을 만들지 못했습니다: ${e.message}`, 'danger');
+    } finally {
+      htmlBusy = false;
+    }
+  }
+
   function pickFile() {
     const input = $('#importFile');
     input.value = '';
@@ -392,6 +431,8 @@
     $('#menuExport').addEventListener('click', () => exportDialog());
     $('#menuXlsx').addEventListener('click', downloadXlsx);
     $('#menuAi').addEventListener('click', aiExportDialog);
+    $('#menuCalc').addEventListener('click', () => downloadHtml('calc'));
+    $('#menuAnalyzer').addEventListener('click', () => downloadHtml('analyzer'));
     $('#topExport').addEventListener('click', () => exportDialog());
     $('#topSave').addEventListener('click', () => { if (root.Cloud.user) root.Cloud.save(); else flash('로그인한 뒤 서버에 저장할 수 있습니다', 'info'); });
 
