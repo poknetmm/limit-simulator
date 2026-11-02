@@ -57,6 +57,7 @@
   const S = {
     data: null,            // {headers, rows, source}
     map: {}, badCol: -1, amtCol: -1,
+    units: {}, amtUnit: 1,      // 금액 열 단위(배수) — 없으면 원
     orig: null, changed: null, changedInfo: null,
     ctx: null, sel: null,
     conds: [], rate: 20,
@@ -242,6 +243,7 @@
     S.map = E.autoMap(cols, res.headers);
     S.badCol = A.autoBadCol(res.headers);
     S.amtCol = A.autoAmtCol(res.headers);
+    S.units = {}; S.amtUnit = 1;
     const notes = [`${source}로 ${nf(res.rows.length)}건 × ${nf(res.headers.length)}열을 읽었습니다. 이 PC 브라우저 메모리에만 있고 저장하지 않습니다.`];
     if (res.short) notes.push(`칸 수가 제목줄보다 적은 줄 ${nf(res.short)}건은 모자란 칸을 빈 칸으로 채웠습니다.`);
     if (res.long) notes.push(`칸 수가 제목줄보다 많은 줄 ${nf(res.long)}건은 남는 칸을 버렸습니다.`);
@@ -252,7 +254,7 @@
 
   function clearData() {
     if (S.busy) { S.stop = true; }
-    S.data = null; S.map = {}; S.badCol = -1; S.amtCol = -1; S.conds = [];
+    S.data = null; S.map = {}; S.badCol = -1; S.amtCol = -1; S.units = {}; S.amtUnit = 1; S.conds = [];
     resetResults();
     const f = $('anFile'); if (f) f.value = '';
     renderData(); renderMap(); renderRun(); renderReport(); renderEditState();
@@ -317,26 +319,41 @@
 
   function renderMap() {
     const sec = $('anSecMap');
+    const prevBox = $('anMapBody').querySelector('details.an-mapbox');
+    const wasOpen = !!(prevBox && prevBox.open);      // 단위를 바꿔 다시 그려도 펼친 표를 닫지 않는다
     clear($('anMapBody'));
     sec.hidden = !S.data;
     if (!S.data) return;
     const body = $('anMapBody');
     const miss = cols.filter(c => !(S.map[c.key] >= 0));
     body.appendChild(h('div', { class: 'sa-note' }, '제목이 변수 이름과 같으면 자동으로 맞춥니다. 없는 열은 잔액 0·그 밖 전략의 기본값으로 계산합니다. 천 원 단위 표시처럼 화면 형식이 값과 다르면 일반 숫자 형식으로 바꿔 복사하세요.'));
+    const moneyCols = cols.filter(c => c.type === 'money');
+    const unitOf = (c) => S.units[c.key] || 1;
+    const allUnits = new Set(moneyCols.map(unitOf).concat(S.amtUnit));
+    const unitOpts = A.UNITS.map(u => ({ v: u.v, t: u.t }));
     const key = h('div', { class: 'an-keycols' },
+      h('label', {}, h('span', { class: 'an-lbl' }, '금액 열 단위 (전체 한 번에)'),
+        select((allUnits.size > 1 ? [{ v: 0, t: '(열마다 다름)' }] : []).concat(unitOpts), allUnits.size > 1 ? 0 : [...allUnits][0],
+          (v) => { const u = Number(v); if (!(u > 0)) return; moneyCols.forEach(c => { S.units[c.key] = u; }); S.amtUnit = u; onMapChange(); renderMap(); }, { id: 'anUnitAll', 'aria-label': '금액 열 단위 전체' })),
       h('label', {}, h('span', { class: 'an-lbl' }, '부실 여부 열 (필수)'),
         select(headerOpts('(고르세요)'), S.badCol, (v) => { S.badCol = Number(v); onCol2Change(); renderMap(); }, { id: 'anBadCol', 'aria-label': '부실 여부 열' })),
       h('label', {}, h('span', { class: 'an-lbl' }, '실행금액(기존 한도) 열 (선택)'),
-        select(headerOpts('(없음 — AS-IS 줄을 만들지 않음)'), S.amtCol, (v) => { S.amtCol = Number(v); onCol2Change(); }, { id: 'anAmtCol', 'aria-label': '실행금액 열' })));
+        select(headerOpts('(없음 — AS-IS 줄을 만들지 않음)'), S.amtCol, (v) => { S.amtCol = Number(v); onCol2Change(); }, { id: 'anAmtCol', 'aria-label': '실행금액 열' })),
+      h('label', {}, h('span', { class: 'an-lbl' }, '실행금액 단위'),
+        select(unitOpts, S.amtUnit, (v) => { S.amtUnit = Number(v); onCol2Change(); renderMap(); }, { id: 'anAmtUnit', 'aria-label': '실행금액 단위' })));
     body.appendChild(key);
+    body.appendChild(h('div', { class: 'sa-note' }, '단위는 계산과 AS-IS 금액에만 적용합니다. 리포트 금액은 원으로 나오고, 제외 조건·⑤ 구간·건별 결과의 원본 칸은 데이터에 적힌 값 그대로입니다.'));
     body.appendChild(h('div', { class: 'sa-note', id: 'anBadHint' }, 'AS-IS는 실행금액 열이 있을 때만 만듭니다. 불량은 Y·1·TRUE·예·O, 정상은 N·0·FALSE·아니오·X로 읽습니다(그 밖·빈 칸은 판정 불가).'));
     const rows = cols.map(c => h('tr', { class: S.map[c.key] >= 0 ? '' : 'an-unmapped' },
       h('td', {}, c.label), h('td', { class: 'sa-note' }, E.VAR_TYPES[c.type] || c.type),
       h('td', {}, select(headerOpts(c.debt ? '(없음 — 잔액 0)' : '(없음 — 기본값)'), S.map[c.key] >= 0 ? S.map[c.key] : -1,
-        (v) => { S.map[c.key] = Number(v); onMapChange(); renderMap(); }, { 'data-map': c.key, 'aria-label': c.label }))));
-    body.appendChild(h('details', { class: 'an-mapbox', open: miss.length > 0 && miss.length < cols.length ? true : null },
+        (v) => { S.map[c.key] = Number(v); onMapChange(); renderMap(); }, { 'data-map': c.key, 'aria-label': c.label })),
+      h('td', {}, c.type === 'money'
+        ? select(unitOpts, unitOf(c), (v) => { S.units[c.key] = Number(v); onMapChange(); renderMap(); }, { 'data-unit': c.key, 'aria-label': `${c.label} 단위` })
+        : '—')));
+    body.appendChild(h('details', { class: 'an-mapbox', open: wasOpen || (miss.length > 0 && miss.length < cols.length) ? true : null },
       h('summary', {}, miss.length ? `전략 입력 열 맞춤 — ${miss.length}개 열이 데이터에 없습니다(기본값으로 계산)` : '전략 입력 열 맞춤 — 모든 입력 열을 찾았습니다'),
-      h('div', { class: 'sa-scroll' }, h('table', { class: 'sa-tbl' }, h('thead', {}, h('tr', {}, ['전략 입력', '형태', '데이터 열'].map(t => h('th', {}, t)))), h('tbody', {}, rows)))));
+      h('div', { class: 'sa-scroll' }, h('table', { class: 'sa-tbl' }, h('thead', {}, h('tr', {}, ['전략 입력', '형태', '데이터 열', '단위'].map(t => h('th', {}, t)))), h('tbody', {}, rows)))));
   }
 
   function renderData() {
@@ -375,7 +392,7 @@
   }
 
   function rebuildCtx() {
-    S.ctx = A.makeContext({ headers: S.data.headers, rows: S.data.rows, badCol: S.badCol, amtCol: S.amtCol, orig: S.orig, changed: S.changed });
+    S.ctx = A.makeContext({ headers: S.data.headers, rows: S.data.rows, badCol: S.badCol, amtCol: S.amtCol, amtUnit: S.amtUnit, orig: S.orig, changed: S.changed });
   }
 
   async function calculate() {
@@ -384,7 +401,7 @@
     const t0 = nowMs();
     try {
       const watch = A.minStepCandidates(strategy).map(c => c.id);
-      const runner = A.createRunner(strategy, cols, S.map, S.data.rows, { watch });
+      const runner = A.createRunner(strategy, cols, S.map, S.data.rows, { watch, units: S.units });
       const ok = await drive(runner, '원래 전략 계산 중');
       if (!ok) { setProgress(''); flash('계산을 멈췄습니다. 결과를 만들지 않았습니다.', 'warn'); return; }
       const keepP5 = S.p5;
@@ -559,7 +576,7 @@
       for (const r of todo) {
         k++;
         const copy = A.comboStrategy(ts, p.nodeId, r.keep);          // 사본마다 준비는 한 번(createRunner 안)
-        const runner = A.createRunner(copy, cols, S.map, S.data.rows, { countErrors: false });
+        const runner = A.createRunner(copy, cols, S.map, S.data.rows, { countErrors: false, units: S.units });
         const ok = await drive(runner, `조합 ${k}/${todo.length}`);
         if (!ok) { flash('조합 계산을 멈췄습니다', 'warn'); break; }
         p.results.set(comboKey(r.keep), runner.result());
@@ -747,7 +764,7 @@
     S.busy = true; S.stop = false; renderRun();
     const t0 = nowMs();
     try {
-      const runner = A.createRunner(r.strategy, cols, S.map, S.data.rows, { countErrors: false, watch: A.minStepCandidates(r.strategy).map(c => c.id) });
+      const runner = A.createRunner(r.strategy, cols, S.map, S.data.rows, { countErrors: false, units: S.units, watch: A.minStepCandidates(r.strategy).map(c => c.id) });
       const ok = await drive(runner, '바꾼 전략 계산 중');
       if (!ok) { setProgress(''); flash('계산을 멈췄습니다. 바꾼 전략 결과를 만들지 않았습니다.', 'warn'); return; }
       S.changed = runner.result();
@@ -802,14 +819,15 @@
     XL.utils.book_append_sheet(wb, ws, sheetName(name));
   }
 
+  const unitTag = (u) => { const f = A.UNITS.find(x => x.v === u); return f && u > 1 ? ` (단위 ${f.t})` : ''; };
   function conditionRows() {
     const hd = S.data.headers, t = (i) => (i >= 0 ? hd[i] || `(제목 없음 ${i + 1})` : '(없음)');
     const rows = [['항목', '값'],
       ['전략 이름', strategy.meta && strategy.meta.name || ''], ['서버 버전', $('saVer').textContent.replace(/^\s*\(서버 v?|\)\s*$/g, '')],
       ['내려받은 시각', $('saTime').textContent], ['리포트 만든 시각', `${stampNow()}`],
       ['데이터 건수', S.ctx.n], ['분석 대상 건수', S.sel.target], ['데이터 출처', S.data.source],
-      ['부실 여부 열', t(S.badCol)], ['실행금액 열', t(S.amtCol)]];
-    for (const c of cols) rows.push([`열 맞춤 — ${c.label}`, t(S.map[c.key] >= 0 ? S.map[c.key] : -1)]);
+      ['부실 여부 열', t(S.badCol)], ['실행금액 열', t(S.amtCol) + unitTag(S.amtUnit)]];
+    for (const c of cols) rows.push([`열 맞춤 — ${c.label}`, t(S.map[c.key] >= 0 ? S.map[c.key] : -1) + unitTag(c.type === 'money' ? S.units[c.key] : 1)]);
     S.sel.steps.filter(s => s.kind === 'user').forEach((s, k) => rows.push([`제외 조건 ${k + 1}`, `${s.name} — ${s.cond}`]));
     rows.push(['금리(연 %)', S.rate]);
     rows.push(['바꾼 값', S.changedInfo ? S.changedInfo.changes.map(c => `${c.name}: ${c.from} → ${c.to}`).join(' / ') : '(없음 — 원래 전략만)']);

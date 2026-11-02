@@ -33,6 +33,14 @@
     return Number.isFinite(n) ? (pct ? n / 100 : n) : null;
   }
 
+  // 금액 열 단위: 칸 값 × 배수 = 원. 숫자로 읽히지 않는 칸은 그대로 둔다(입력 오류·빈 칸 판정은 기존대로)
+  const UNITS = [{ v: 1, t: '원' }, { v: 1000, t: '천원' }, { v: 10000, t: '만원' }, { v: 1000000, t: '백만원' }];
+  function scaleCell(raw, mult) {
+    if (!(mult > 0) || mult === 1) return raw;
+    const v = toNumber(raw);
+    return v === null ? raw : Number((v * mult).toFixed(6));     // 1.1 × 1000 같은 부동소수 꼬리 제거
+  }
+
   // 부실 여부 칸 → 1(불량) · 0(정상) · 2(판정 불가). 앞뒤 공백·대소문자 무시
   const BAD_SET = new Set(['Y', '1', 'TRUE', '예', 'O']);
   const GOOD_SET = new Set(['N', '0', 'FALSE', '아니오', 'X']);
@@ -194,6 +202,9 @@
     const watch = (opt.watch || []).map(id => ({ id, arr: new Uint8Array(n) }));
     const errCols = new Map();
     let defaults = 0, i = 0;
+    // opt.units: {열 key: 배수} — 원이 아닌 금액 열만 행 사본에서 원으로 바꿔 엔진에 넘긴다(원본 행은 그대로)
+    const scaled = cols.filter(c => opt.units && opt.units[c.key] > 1 && mapping[c.key] >= 0)
+      .map(c => ({ at: mapping[c.key], mult: opt.units[c.key] }));
 
     function countErrCols(row) {
       for (const c of cols) {
@@ -205,7 +216,9 @@
 
     function one(k) {
       const row = rows[k];
-      const ri = E.rowInputs(strategy, cols, mapping, row);
+      let cells = row;
+      if (scaled.length) { cells = row.slice(); for (const s of scaled) cells[s.at] = scaleCell(row[s.at], s.mult); }
+      const ri = E.rowInputs(strategy, cols, mapping, cells);
       if (ri.warnings.length) defaults++;
       if (ri.errors.length) { status[k] = ST_INPUT; if (opt.countErrors !== false) countErrCols(row); return; }
       let r;
@@ -235,7 +248,7 @@
   }
 
   // ── 분석 맥락 ───────────────────────────────────────────────────────────
-  // o: {headers, rows, badCol, amtCol, orig, changed}
+  // o: {headers, rows, badCol, amtCol, amtUnit(배수, 기본 1), orig, changed}
   function makeContext(o) {
     const n = o.rows.length;
     const bad = new Uint8Array(n);
@@ -243,7 +256,7 @@
     let amt = null, amtInvalid = 0;
     if (o.amtCol >= 0) {
       amt = new Float64Array(n);
-      for (let i = 0; i < n; i++) { const v = toNumber(o.rows[i][o.amtCol]); if (v === null) { amt[i] = 0; amtInvalid++; } else amt[i] = v; }
+      for (let i = 0; i < n; i++) { const v = toNumber(o.rows[i][o.amtCol]); if (v === null) { amt[i] = 0; amtInvalid++; } else amt[i] = v * (o.amtUnit || 1); }
     }
     return { n, headers: o.headers, rows: o.rows, bad, amt, amtInvalid, orig: o.orig, changed: o.changed || null, colCache: new Map() };
   }
@@ -602,7 +615,7 @@
 
   return {
     MAX_ROWS, MIN_CAT, MAX_CAT_UNIQUE, MAX_CAT_SHARE, COND_OPS, NO_VALUE_OPS, ST_OK, ST_REJECT, ST_ERROR, ST_INPUT,
-    isBlank, toNumber, badValue, createPasteParser, parsePaste, fromAoa, overMessage, MSG_RANGE, MSG_NO_TAB, MSG_NO_ROWS, MSG_EMPTY,
+    UNITS, scaleCell, isBlank, toNumber, badValue, createPasteParser, parsePaste, fromAoa, overMessage, MSG_RANGE, MSG_NO_TAB, MSG_NO_ROWS, MSG_EMPTY,
     findHeader, autoBadCol, autoAmtCol, createRunner, makeContext, colInfo, condTest, condText, selection,
     tally, strategyPick, summaryRows, withProfit, itemLabel, minStepCandidates, defaultCombos, comboStrategy, sameKeep,
     normalizeEdges, binIndex, limitEdges, limitMatrix, decileEdges, rangeLabel, cumulate, varTable,
